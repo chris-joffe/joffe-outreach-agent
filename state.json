@@ -1,6 +1,6 @@
 {
   "persona_cursor": 0,
-  "last_daily_run": null,
+  "last_daily_run": "2026-08-05",
   "last_report_run": null,
   "daily_sent_count": {},
   "daily_new_count": {},
@@ -9,5 +9,8 @@
   "daily_mql_count": {},
   "daily_bounce_count": {},
   "daily_unsub_count": {},
-  "daily_variant_sent": {"A": {}, "B": {}}
+  "daily_variant_sent": {
+    "A": {},
+    "B": {}
+  }
 }
