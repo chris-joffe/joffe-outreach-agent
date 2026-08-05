@@ -190,14 +190,18 @@ def _anthropic(payload, timeout=240):
 # ─── Email generation ─────────────────────────────────────────────────────────
 VARIANT_HOOKS = {
     "A": (
-        "VARIANT A — MEMBERSHIP (the AAA analogy). Frame safety as an always-on "
-        "partnership, not a one-off purchase. The analogy: a Joffe membership is like "
-        "AAA for school safety — the plan, the drills, and a real person to call are "
-        "already set up and kept current for you, so it's ready and maintained instead "
-        "of something you have to assemble yourself. Emphasize peace of mind, being "
-        "prepared year-round, and having an expert partner in your corner. Warm, "
-        "positive, confidence-building. Do NOT use fear, worst-case scenarios, or "
-        "'hope it never happens / then you scramble' framing — no scare tactics."
+        "VARIANT A - MEMBERSHIP (Joffe's entry-tier annual membership, internally 'The Steady "
+        "Hand'). Do NOT oversell it and do NOT list its features. Lead with ONE concrete, human "
+        "hook and keep it understated. Strongest hook: one number to call, any hour, and a real "
+        "Joffe emergency specialist picks up, whether it is an active situation or just a call "
+        "they are not sure how to make. The emotional core, in plain words: you stop being "
+        "alone with the decision. It is decision support and steady preparedness, not crisis "
+        "response and not consulting. You may use ONE true supporting detail (never list them): "
+        "a 24/7 hotline answered by a real specialist; the first thing after joining is an hour "
+        "with a safety expert, not an invoice; a local trends report built for their campus; "
+        "help getting set up for federal priority communications so calls still go through when "
+        "networks are jammed. The goal is defensible, clear-headed decisions, not perfection. "
+        "Warm, calm, understated. Never scary, never hype."
     ),
     "B": (
         "VARIANT B — ASSESSMENT (the Swiss cheese model). The hook: school incidents "
@@ -210,16 +214,16 @@ VARIANT_HOOKS = {
 }
 
 FALLBACK = {
-    "A": ("A quick idea for {school}",
-          "Hi {first},\n\nThink of a Joffe membership like AAA for school safety: the "
-          "plan, the drills, and a real person to call are already set up and kept "
-          "current for you — so you're prepared year-round without having to build it "
-          f"yourself. We support {SCHOOLS_SUPPORTED} this way."),
+    "A": ("One number, any hour",
+          "Hi {first},\n\nA Joffe membership is really one thing at its core: a number you "
+          "can call any hour, where a real emergency specialist picks up. For an active "
+          "situation, or just a call you are not sure how to make. The point is simple. You "
+          f"stop being alone with the decision. We do this with {SCHOOLS_SUPPORTED}."),
     "B": ("The gaps most schools can't see",
-          "Hi {first},\n\nMost school incidents aren't one big failure — they're small "
-          "gaps quietly lining up, like holes in stacked slices of Swiss cheese. We built "
-          "a free 5-minute assessment that walks through the 15 layers schools most often "
-          f"miss. We run it with {SCHOOLS_SUPPORTED}."),
+          "Hi {first},\n\nMost school incidents aren't one big failure. They're small gaps "
+          "quietly lining up, like holes in stacked slices of Swiss cheese. We built a free "
+          "5-minute assessment that walks through the 15 layers schools most often miss. We "
+          f"run it with {SCHOOLS_SUPPORTED}."),
 }
 
 
@@ -243,12 +247,17 @@ def generate_batch(contacts):
         f"You are a business development associate at {COMPANY_NAME}, a school safety and "
         f"emergency-management partner that supports {SCHOOLS_SUPPORTED} across the country.\n\n"
         "APPROACH (from our SDR playbook, grounded in what actually converts): consultative "
-        "and human, never salesy. Under 100 words. A single clear hook. No 'I hope this finds "
-        "you well'. NEVER use the word 'pitch' or any variant ('not a pitch', 'this isn't a "
-        "pitch', 'not a sales pitch') — do not reference pitching at all. No exclamation "
-        "points. No hard close. Never mention price or discounts. Prevention-first and "
-        "confidence-building, never fear-, doom-, or liability-based (avoid 'before it's too "
-        "late' style lines).\n\n"
+        "and human, never salesy, and never overselling. Under 100 words. ONE clear hook only. "
+        "Do not stack benefits or list features. No 'I hope this finds you well'. NEVER use the "
+        "word 'pitch' or any variant. No exclamation points. No hard close. Never mention price "
+        "or discounts.\n"
+        "STYLE (these are the AI tells we must avoid): NEVER use an em dash or en dash (the '—' "
+        "or '–' character) anywhere; use a period or a comma instead. Keep sentences plain and "
+        "specific, not florid. If a sentence is phrased as a question, it MUST end with a "
+        "question mark.\n"
+        "TONE: calm, understated, steadying. Absolutely NO fear, doom, or worst-case framing, "
+        "and never phrases like 'hope it all holds together', 'what if it fails', or 'before "
+        "it's too late'. The reader should feel steadier after reading, never more anxious.\n\n"
         "Each contact has a VARIANT (A or B) — use its framing:\n"
         f"  {VARIANT_HOOKS['A']}\n"
         f"  {VARIANT_HOOKS['B']}\n\n"
@@ -306,23 +315,23 @@ def generate_batch(contacts):
 
 def cta_block(variant, touch):
     """Return (plain_suffix, html_suffix) for the call-to-action, by variant & touch."""
-    if touch == 2:   # book offer — invite a reply, keep the arm's link as a soft option
-        plain = ("\n\nWant a copy of All Clear? Just reply — read or listen, on us "
-                 "(happy to mail a physical copy if you send an address).")
-        html = ('<br><br>Want a copy of <em>All Clear</em>? Just reply — read or listen, '
-                'on us (happy to mail a physical copy if you send an address).')
+    if touch == 2:   # book offer: invite a reply, keep the arm's link as a soft option
+        plain = ("\n\nWant a copy of All Clear? Just reply and I'll send it over, to read or "
+                 "listen, on us. Happy to mail a physical copy if you send an address.")
+        html = ("<br><br>Want a copy of <em>All Clear</em>? Just reply and I'll send it over, "
+                "to read or listen, on us. Happy to mail a physical copy if you send an address.")
         return plain, html
     if variant == "B":
-        plain = (f"\n\nTake the free 5-minute assessment here: {ASSESSMENT_LINK}\n"
-                 f"(Prefer to talk it through? Grab a time with Colleen: {COLLEEN_LINK})")
-        html = (f'<br><br>Take the free 5-minute assessment '
+        plain = (f"\n\nIf you're curious, the free 5-minute assessment is here: {ASSESSMENT_LINK}\n"
+                 f"Or if you'd rather talk it through first, Colleen has a little time here: {COLLEEN_LINK}")
+        html = (f'<br><br>If you\'re curious, the free 5-minute assessment is '
                 f'<a href="{html_escape(ASSESSMENT_LINK, quote=True)}">here</a>.<br>'
-                f'<span style="color:#666">(Prefer to talk it through? '
-                f'<a href="{html_escape(COLLEEN_LINK, quote=True)}">grab a time with Colleen</a>.)</span>')
+                f'<span style="color:#666">Or if you\'d rather talk it through first, '
+                f'<a href="{html_escape(COLLEEN_LINK, quote=True)}">Colleen has a little time here</a>.</span>')
         return plain, html
-    plain = f"\n\nGrab whatever time works here: {COLLEEN_LINK}"
-    html = (f'<br><br>Grab whatever time works '
-            f'<a href="{html_escape(COLLEEN_LINK, quote=True)}">here</a>.')
+    plain = f"\n\nIf it would ever help to talk something through, Colleen keeps a little time open here: {COLLEEN_LINK}"
+    html = (f'<br><br>If it would ever help to talk something through, '
+            f'<a href="{html_escape(COLLEEN_LINK, quote=True)}">Colleen keeps a little time open here</a>.')
     return plain, html
 
 
