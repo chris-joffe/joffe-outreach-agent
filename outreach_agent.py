@@ -43,7 +43,7 @@ from zoneinfo import ZoneInfo
 import hubspot_db as hs
 
 # ─── Identity & contacts ──────────────────────────────────────────────────────
-COMPANY_NAME  = "Joffe"
+COMPANY_NAME  = "Joffe Emergency Services"
 CHRIS_EMAIL   = "chris@joffeemergencyservices.com"
 COLLEEN_EMAIL = "colleens@joffeemergencyservices.com"
 COLLEEN_OWNER_ID = "199562610"          # HubSpot owner id for SQL assignment
@@ -191,11 +191,13 @@ def _anthropic(payload, timeout=240):
 VARIANT_HOOKS = {
     "A": (
         "VARIANT A — MEMBERSHIP (the AAA analogy). Frame safety as an always-on "
-        "partnership, not a one-off purchase. The analogy: most schools treat safety "
-        "like a car breakdown — hope it doesn't happen, then scramble when it does. A "
-        "Joffe membership works like AAA: the plan, the drills, and a real person to "
-        "call are already in place BEFORE the moment you need them. Warm, plain, "
-        "confidence-building — never fear-based."
+        "partnership, not a one-off purchase. The analogy: a Joffe membership is like "
+        "AAA for school safety — the plan, the drills, and a real person to call are "
+        "already set up and kept current for you, so it's ready and maintained instead "
+        "of something you have to assemble yourself. Emphasize peace of mind, being "
+        "prepared year-round, and having an expert partner in your corner. Warm, "
+        "positive, confidence-building. Do NOT use fear, worst-case scenarios, or "
+        "'hope it never happens / then you scramble' framing — no scare tactics."
     ),
     "B": (
         "VARIANT B — ASSESSMENT (the Swiss cheese model). The hook: school incidents "
@@ -209,10 +211,10 @@ VARIANT_HOOKS = {
 
 FALLBACK = {
     "A": ("A quick idea for {school}",
-          "Hi {first},\n\nMost schools handle safety like a breakdown on the highway — "
-          "hope it doesn't happen, then scramble when it does. A Joffe membership works "
-          "more like AAA: the plan, the drills, and someone to call are in place before "
-          f"you need them. We support {SCHOOLS_SUPPORTED} this way."),
+          "Hi {first},\n\nThink of a Joffe membership like AAA for school safety: the "
+          "plan, the drills, and a real person to call are already set up and kept "
+          "current for you — so you're prepared year-round without having to build it "
+          f"yourself. We support {SCHOOLS_SUPPORTED} this way."),
     "B": ("The gaps most schools can't see",
           "Hi {first},\n\nMost school incidents aren't one big failure — they're small "
           "gaps quietly lining up, like holes in stacked slices of Swiss cheese. We built "
@@ -426,6 +428,30 @@ def run_daily(dry_run=False, limit=None):
             c["variant"] = c.get("variant") or variant_for(c["email"])
             c["is_role"] = is_role_address(c["email"])
             queue.append(c)
+
+        # 2b — CUSTOMER GATE (new contacts): never cold-email an account HubSpot shows as
+        #      a current/former customer or active opportunity — checked at company +
+        #      deal level, since a contact can read 'subscriber' while their school is a
+        #      customer. Skipped contacts are stamped so they never resurface.
+        gated = 0
+        survivors = []
+        for c in queue:
+            if c.get("touch", 1) == 1:
+                skip, reason = hs.customer_gate(HUBSPOT_TOKEN, c)
+                if skip:
+                    gated += 1
+                    log.info(f"  gated {redact_email(c['email'])} — {reason}")
+                    if not dry_run:
+                        hs.stamp(HUBSPOT_TOKEN, c["id"], status="Skipped-Customer",
+                                 agent=f"skipped: {reason}"[:100])
+                    continue
+            survivors.append(c)
+        queue = survivors
+        if gated:
+            log.info(f"Customer gate: {gated} skipped, {len(queue)} remain.")
+        if not queue:
+            log.info("Nothing to send after the customer gate.")
+            return
 
         # 3 — generate in batches
         log.info(f"Generating {len(queue)} emails (batches of {GENERATION_BATCH_SIZE})...")

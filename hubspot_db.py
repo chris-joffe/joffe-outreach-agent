@@ -50,6 +50,7 @@ CUSTOM_PROPS = [
             {"label": "SQL", "value": "SQL"},
             {"label": "Bounced", "value": "Bounced"},
             {"label": "Unsubscribed", "value": "Unsubscribed"},
+            {"label": "Skipped-Customer", "value": "Skipped-Customer"},
         ],
     },
     {"name": "joffe_outreach_touches", "label": "Joffe Outreach Touches",
@@ -114,12 +115,20 @@ def _request(method, url, token, payload=None, tries=4):
 # ─── Property + portal setup ─────────────────────────────────────────────────
 
 def ensure_properties(token, group="contactinformation"):
-    """Create any of our custom tracking properties that don't exist yet. Idempotent —
-    a 409 (already exists) is treated as success. Returns list of created names."""
+    """Create any of our custom tracking properties that don't exist yet, and sync enum
+    options if we've added new ones since (e.g. Skipped-Customer). Idempotent. Returns
+    the list of created names."""
     created = []
     for p in CUSTOM_PROPS:
-        status, _ = _request("GET", f"{BASE}/crm/v3/properties/contacts/{p['name']}", token)
+        status, resp = _request("GET", f"{BASE}/crm/v3/properties/contacts/{p['name']}", token)
         if status == 200:
+            # property exists — add any enum options that are missing
+            if "options" in p:
+                have = {o.get("value") for o in resp.get("options", [])}
+                want = {o["value"] for o in p["options"]}
+                if not want <= have:
+                    _request("PATCH", f"{BASE}/crm/v3/properties/contacts/{p['name']}", token,
+                             {"options": p["options"]})
             continue
         body = {"name": p["name"], "label": p["label"], "type": p["type"],
                 "fieldType": p["fieldType"], "groupName": group}
@@ -133,6 +142,55 @@ def ensure_properties(token, group="contactinformation"):
         else:
             raise RuntimeError(f"Failed to create property {p['name']}: HTTP {st} {resp}")
     return created
+
+
+# Company lifecycle stages that mean "don't cold-email anyone here" (SQL or higher).
+SKIP_COMPANY_STAGES = {"salesqualifiedlead", "opportunity", "customer", "evangelist"}
+
+
+def _deal_flags(token, deal_id):
+    """(is_won, is_open) for a deal, using HubSpot's pipeline-agnostic closed flags."""
+    _, d = _request("GET", f"{BASE}/crm/v3/objects/deals/{deal_id}"
+                    "?properties=hs_is_closed_won,hs_is_closed", token)
+    p = d.get("properties", {})
+    won = str(p.get("hs_is_closed_won")).lower() == "true"
+    closed = str(p.get("hs_is_closed")).lower() == "true"
+    return won, (not closed)
+
+
+def _assoc_ids(token, from_obj, obj_id, to_obj):
+    _, d = _request("GET", f"{BASE}/crm/v3/objects/{from_obj}/{obj_id}/associations/{to_obj}", token)
+    return [r["id"] for r in d.get("results", [])]
+
+
+def customer_gate(token, contact):
+    """Return (skip, reason). Skip a contact if HubSpot shows the account is a current
+    or former customer / active opportunity — checked at the COMPANY level (lifecycle +
+    the company's deals) and the contact's own deals. Catches the case where an
+    individual contact still reads 'subscriber' but their school is a customer.
+    NOTE: can only catch what HubSpot records — a former customer with no company
+    lifecycle, no deal, is invisible here (needs a suppression list)."""
+    cid = contact["id"]
+    for company_id in _assoc_ids(token, "contacts", cid, "companies"):
+        _, co = _request("GET", f"{BASE}/crm/v3/objects/companies/{company_id}"
+                         "?properties=name,lifecyclestage", token)
+        cp = co.get("properties", {})
+        name = cp.get("name") or company_id
+        if (cp.get("lifecyclestage") or "").lower() in SKIP_COMPANY_STAGES:
+            return True, f"company '{name}' is {cp.get('lifecyclestage')}"
+        for did in _assoc_ids(token, "companies", company_id, "deals"):
+            won, is_open = _deal_flags(token, did)
+            if won:
+                return True, f"company '{name}' has a closed-won deal"
+            if is_open:
+                return True, f"company '{name}' has an open deal"
+    for did in _assoc_ids(token, "contacts", cid, "deals"):
+        won, is_open = _deal_flags(token, did)
+        if won:
+            return True, "contact has a closed-won deal"
+        if is_open:
+            return True, "contact has an open deal"
+    return False, ""
 
 
 _PORTAL = None
