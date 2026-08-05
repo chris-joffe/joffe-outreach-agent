@@ -1,16 +1,22 @@
 {
-  "persona_cursor": 0,
+  "persona_cursor": 2,
   "last_daily_run": "2026-08-05",
-  "last_report_run": null,
-  "daily_sent_count": {},
-  "daily_new_count": {},
+  "last_report_run": "2026-08-05",
+  "daily_sent_count": {
+    "2026-08-05": 2
+  },
+  "daily_new_count": {
+    "2026-08-05": 2
+  },
   "daily_reply_count": {},
   "daily_sql_count": {},
   "daily_mql_count": {},
   "daily_bounce_count": {},
   "daily_unsub_count": {},
   "daily_variant_sent": {
-    "A": {},
+    "A": {
+      "2026-08-05": 2
+    },
     "B": {}
   }
 }
