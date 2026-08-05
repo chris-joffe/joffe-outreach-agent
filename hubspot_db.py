@@ -1,0 +1,388 @@
+"""
+hubspot_db.py — HubSpot as the Joffe SDR's source, status ledger, and activity log.
+=====================================================================================
+Unlike Vida (which used a Google Sheet as its DB), the Joffe SDR treats the Joffe
+HubSpot portal (2936356) as the single source of truth:
+
+  • SOURCE   — we SEARCH for eligible School contacts (subscribers first, then leads).
+  • LEDGER   — we STAMP custom properties on each contact as we act on it, so
+               "already contacted" is simply a filter on joffe_outreach_status.
+  • ACTIVITY — we LOG the actual email onto the contact's timeline as an email
+               engagement (no BCC, no browser extension — done directly via the API).
+
+Auth: a HubSpot private-app token passed in from the agent (env HUBSPOT_TOKEN).
+Needs scopes: crm.objects.contacts read+write, crm.objects.deals read (optional
+gate), and crm.objects.emails/engagements write (for timeline logging).
+
+Custom properties this module owns (auto-created by ensure_properties):
+  joffe_outreach_status   enum   Contacted / Replied / MQL / SQL / Bounced / Unsubscribed
+  joffe_outreach_touches  number 1-4 (which touch in the cadence they last got)
+  joffe_last_touch_date   string YYYY-MM-DD (compared client-side for follow-up timing)
+  joffe_outreach_variant  string A (Membership) / B (Assessment)
+  joffe_outreach_agent    string sending SDR display name (Jessica Dean / Ryan Andrews)
+"""
+import json
+import os
+import ssl
+import time
+import urllib.request
+import urllib.error
+
+BASE = "https://api.hubapi.com"
+
+# Contacts we source. We message subscribers before leads (Chris). Anyone at MQL or
+# above is deliberately excluded by the lifecycle filter, which satisfies the hard
+# rule "never message anyone who's SQL or higher" without a separate exclusion.
+SCHOOL_TYPE = "School"          # organization_type_ (Relationship Type*) option value
+SOURCE_STAGES = ["subscriber", "lead"]
+
+# email → contact default association typeId (HUBSPOT_DEFINED)
+EMAIL_TO_CONTACT_ASSOC = 198
+
+CUSTOM_PROPS = [
+    {
+        "name": "joffe_outreach_status", "label": "Joffe Outreach Status",
+        "type": "enumeration", "fieldType": "select",
+        "options": [
+            {"label": "Contacted", "value": "Contacted"},
+            {"label": "Replied", "value": "Replied"},
+            {"label": "MQL", "value": "MQL"},
+            {"label": "SQL", "value": "SQL"},
+            {"label": "Bounced", "value": "Bounced"},
+            {"label": "Unsubscribed", "value": "Unsubscribed"},
+        ],
+    },
+    {"name": "joffe_outreach_touches", "label": "Joffe Outreach Touches",
+     "type": "number", "fieldType": "number"},
+    {"name": "joffe_last_touch_date", "label": "Joffe Last Touch Date",
+     "type": "string", "fieldType": "text"},
+    {"name": "joffe_outreach_variant", "label": "Joffe Outreach Variant",
+     "type": "string", "fieldType": "text"},
+    {"name": "joffe_outreach_agent", "label": "Joffe Outreach Agent",
+     "type": "string", "fieldType": "text"},
+]
+
+READ_PROPS = [
+    "email", "firstname", "lastname", "company", "lifecyclestage",
+    "organization_type_", "hubspot_owner_id",
+    "joffe_outreach_status", "joffe_outreach_touches", "joffe_last_touch_date",
+    "joffe_outreach_variant", "joffe_outreach_agent",
+]
+
+
+def _ssl_ctx():
+    try:
+        import certifi
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def _headers(token):
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+def _request(method, url, token, payload=None, tries=4):
+    """One HubSpot REST call with retry on transient (429/5xx/network) errors.
+    Returns (status_code, parsed_json). Raises only after exhausting retries on a
+    genuine network exception."""
+    last = None
+    for attempt in range(tries):
+        try:
+            data = json.dumps(payload).encode() if payload is not None else None
+            req = urllib.request.Request(url, data=data, headers=_headers(token), method=method)
+            with urllib.request.urlopen(req, timeout=60, context=_ssl_ctx()) as r:
+                body = r.read().decode()
+                return r.status, (json.loads(body) if body else {})
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            try:
+                parsed = json.loads(body)
+            except Exception:
+                parsed = {"raw": body}
+            # Retry rate-limits and server errors; return anything else to the caller.
+            if e.code in (429, 500, 502, 503, 504) and attempt < tries - 1:
+                time.sleep(2 * (attempt + 1))
+                continue
+            return e.code, parsed
+        except Exception as e:
+            last = e
+            time.sleep(2 * (attempt + 1))
+    raise last
+
+
+# ─── Property + portal setup ─────────────────────────────────────────────────
+
+def ensure_properties(token, group="contactinformation"):
+    """Create any of our custom tracking properties that don't exist yet. Idempotent —
+    a 409 (already exists) is treated as success. Returns list of created names."""
+    created = []
+    for p in CUSTOM_PROPS:
+        status, _ = _request("GET", f"{BASE}/crm/v3/properties/contacts/{p['name']}", token)
+        if status == 200:
+            continue
+        body = {"name": p["name"], "label": p["label"], "type": p["type"],
+                "fieldType": p["fieldType"], "groupName": group}
+        if "options" in p:
+            body["options"] = p["options"]
+        st, resp = _request("POST", f"{BASE}/crm/v3/properties/contacts", token, body)
+        if st in (200, 201):
+            created.append(p["name"])
+        elif st == 409:
+            pass  # created concurrently / already there
+        else:
+            raise RuntimeError(f"Failed to create property {p['name']}: HTTP {st} {resp}")
+    return created
+
+
+_PORTAL = None
+
+
+def portal_id(token):
+    global _PORTAL
+    if _PORTAL is not None:
+        return _PORTAL
+    try:
+        _, data = _request("GET", f"{BASE}/account-info/v3/details", token)
+        _PORTAL = str(data.get("portalId", "") or "")
+    except Exception:
+        _PORTAL = ""
+    return _PORTAL
+
+
+def contact_link(token, cid):
+    pid = portal_id(token)
+    return f"https://app.hubspot.com/contacts/{pid}/record/0-1/{cid}" if pid and cid else ""
+
+
+# ─── Source: search for eligible contacts ────────────────────────────────────
+
+def _parse_contact(result):
+    p = result.get("properties", {})
+    return {
+        "id": result.get("id"),
+        "email": (p.get("email") or "").strip(),
+        "firstName": (p.get("firstname") or "").strip(),
+        "lastName": (p.get("lastname") or "").strip(),
+        "company": (p.get("company") or "").strip(),
+        "lifecycle": (p.get("lifecyclestage") or "").strip(),
+        "owner_id": (p.get("hubspot_owner_id") or "").strip(),
+        "status": (p.get("joffe_outreach_status") or "").strip(),
+        "touches": p.get("joffe_outreach_touches") or "",
+        "last_touch": (p.get("joffe_last_touch_date") or "").strip(),
+        "variant": (p.get("joffe_outreach_variant") or "").strip(),
+        "agent": (p.get("joffe_outreach_agent") or "").strip(),
+    }
+
+
+def _search(token, filters, needed, sort_prop="createdate"):
+    """Page through a HubSpot contact search until we collect `needed` results or run
+    out. Returns a list of parsed contact dicts."""
+    out = []
+    after = None
+    while len(out) < needed:
+        payload = {
+            "filterGroups": [{"filters": filters}],
+            "properties": READ_PROPS,
+            "sorts": [{"propertyName": sort_prop, "direction": "ASCENDING"}],
+            "limit": min(100, needed - len(out)),
+        }
+        if after:
+            payload["after"] = after
+        status, data = _request("POST", f"{BASE}/crm/v3/objects/contacts/search", token, payload)
+        if status != 200:
+            raise RuntimeError(f"contact search failed: HTTP {status} {data}")
+        for r in data.get("results", []):
+            c = _parse_contact(r)
+            if c["email"]:
+                out.append(c)
+        after = (data.get("paging", {}).get("next", {}) or {}).get("after")
+        if not after:
+            break
+    return out[:needed]
+
+
+def fetch_new(token, needed):
+    """Eligible NEVER-CONTACTED School contacts: subscribers first, then leads.
+    'Never contacted' = our joffe_outreach_status has no value yet. Because we stamp
+    that property the moment we email someone, each run naturally returns the next
+    slice — no cursor to maintain."""
+    collected = []
+    for stage in SOURCE_STAGES:
+        if len(collected) >= needed:
+            break
+        filters = [
+            {"propertyName": "organization_type_", "operator": "EQ", "value": SCHOOL_TYPE},
+            {"propertyName": "lifecyclestage", "operator": "EQ", "value": stage},
+            {"propertyName": "joffe_outreach_status", "operator": "NOT_HAS_PROPERTY"},
+            {"propertyName": "email", "operator": "HAS_PROPERTY"},
+        ]
+        batch = _search(token, filters, needed - len(collected))
+        for c in batch:
+            c["touch"] = 1
+        collected.extend(batch)
+    return collected
+
+
+def fetch_followups(token, needed, today, gap_days, max_touches, stale_days):
+    """Contacts mid-sequence (status Contacted, touches 1..max-1) whose next touch is
+    due. Date-due is judged client-side to avoid HubSpot date-filter epoch quirks."""
+    from datetime import date
+    filters = [
+        {"propertyName": "organization_type_", "operator": "EQ", "value": SCHOOL_TYPE},
+        {"propertyName": "joffe_outreach_status", "operator": "EQ", "value": "Contacted"},
+        {"propertyName": "joffe_outreach_touches", "operator": "LT", "value": max_touches},
+    ]
+    # Pull a generous window; due-filtering below trims it.
+    candidates = _search(token, filters, max(needed * 4, 200), sort_prop="joffe_last_touch_date")
+    due = []
+    for c in candidates:
+        if len(due) >= needed:
+            break
+        try:
+            t = int(float(c["touches"]))
+        except (TypeError, ValueError):
+            continue
+        if t < 1 or t >= max_touches:
+            continue
+        try:
+            sent = date.fromisoformat((c["last_touch"] or "")[:10])
+        except ValueError:
+            continue
+        age = (today - sent).days
+        if gap_days.get(t, 999) <= age <= stale_days:
+            c["touch"] = t + 1
+            due.append(c)
+    return due
+
+
+# ─── Ledger writes ───────────────────────────────────────────────────────────
+
+def stamp(token, cid, **props):
+    """PATCH the contact with any of our custom tracking properties. Keys accepted:
+    status, touches, last_touch, variant, agent (plus raw lifecyclestage/hs_lead_status
+    if passed as those exact names)."""
+    keymap = {
+        "status": "joffe_outreach_status", "touches": "joffe_outreach_touches",
+        "last_touch": "joffe_last_touch_date", "variant": "joffe_outreach_variant",
+        "agent": "joffe_outreach_agent",
+    }
+    body = {}
+    for k, v in props.items():
+        if v is None:
+            continue
+        body[keymap.get(k, k)] = str(v)
+    if not body:
+        return
+    status, resp = _request("PATCH", f"{BASE}/crm/v3/objects/contacts/{cid}", token,
+                            {"properties": body})
+    if status not in (200, 201):
+        raise RuntimeError(f"stamp {cid} failed: HTTP {status} {resp}")
+
+
+def log_email(token, cid, subject, body_text, from_name, from_email, to_email, ts_ms):
+    """Log a sent email onto the contact's timeline as an email engagement — the direct-
+    API equivalent of the HubSpot Chrome extension / BCC logging. Best-effort: a failure
+    here never blocks the send (returns False)."""
+    payload = {
+        "properties": {
+            "hs_timestamp": str(ts_ms),
+            "hs_email_direction": "EMAIL",
+            "hs_email_status": "SENT",
+            "hs_email_subject": subject,
+            "hs_email_text": body_text,
+            "hs_email_headers": json.dumps({
+                "from": {"email": from_email, "firstName": from_name},
+                "to": [{"email": to_email}],
+            }),
+        },
+        "associations": [{
+            "to": {"id": str(cid)},
+            "types": [{"associationCategory": "HUBSPOT_DEFINED",
+                       "associationTypeId": EMAIL_TO_CONTACT_ASSOC}],
+        }],
+    }
+    try:
+        status, resp = _request("POST", f"{BASE}/crm/v3/objects/emails", token, payload)
+        return status in (200, 201)
+    except Exception:
+        return False
+
+
+# ─── Reply-side writes: promote to MQL / SQL, stamp attribution ───────────────
+
+_SOURCE_PROP = None  # cache: (prop_name, option_value) or (None, None)
+
+
+def _resolve_source_prop(token):
+    """Find a WRITABLE traffic-source contact property with an 'AI Referrals' option.
+    Prefers Original Source (hs_analytics_source) — durable, first-known-source, and
+    manually writable — over Latest Traffic Source (recalculated each web session).
+    Returns (name, value) or (None, None) if none is writable."""
+    global _SOURCE_PROP
+    if _SOURCE_PROP is not None:
+        return _SOURCE_PROP
+    _SOURCE_PROP = (None, None)
+    try:
+        _, data = _request("GET", f"{BASE}/crm/v3/properties/contacts", token)
+        props = {p["name"]: p for p in data.get("results", [])}
+        for name in ("hs_analytics_source", "hs_latest_source"):
+            p = props.get(name)
+            if not p:
+                continue
+            if (p.get("modificationMetadata") or {}).get("readOnlyValue"):
+                continue  # can't write it
+            for opt in p.get("options", []):
+                if opt.get("label", "").strip().lower() in ("ai referrals", "ai referral"):
+                    _SOURCE_PROP = (name, opt["value"])
+                    return _SOURCE_PROP
+    except Exception:
+        pass
+    return _SOURCE_PROP
+
+
+def find_contact(token, email):
+    """Return the contact id for an email, or '' if not in HubSpot."""
+    status, data = _request("POST", f"{BASE}/crm/v3/objects/contacts/search", token, {
+        "filterGroups": [{"filters": [{"propertyName": "email", "operator": "EQ", "value": email}]}],
+        "properties": ["email", "lifecyclestage"], "limit": 1,
+    })
+    if status == 200 and data.get("results"):
+        return str(data["results"][0]["id"])
+    return ""
+
+
+def upsert_lead(token, email, stage, first="", last="", company="", phone="",
+                agent_name="", owner_id=None, stamp_source=False):
+    """Create or update a HubSpot contact at `stage` (marketingqualifiedlead or
+    salesqualifiedlead). Optionally assign an owner and stamp Original Source =
+    AI Referrals + drill-down = the SDR name (only on create/convert, never
+    clobbering an existing lead's genuine original source unless stamp_source=True).
+    Returns the contact id or ''."""
+    props = {"email": email, "lifecyclestage": stage}
+    if first:
+        props["firstname"] = first
+    if last:
+        props["lastname"] = last
+    if company:
+        props["company"] = company
+    if phone:
+        props["phone"] = phone
+    if owner_id:
+        props["hubspot_owner_id"] = str(owner_id)
+
+    existing = find_contact(token, email)
+
+    if stamp_source and (not existing):  # only stamp source on brand-new contacts
+        sp_name, sp_val = _resolve_source_prop(token)
+        if sp_name:
+            props[sp_name] = sp_val
+            drill = f"{sp_name}_data_1"
+            props[drill] = f"Joffe SDR – {agent_name}" if agent_name else "Joffe SDR"
+
+    if existing:
+        status, resp = _request("PATCH", f"{BASE}/crm/v3/objects/contacts/{existing}", token,
+                                {"properties": props})
+        return existing if status in (200, 201) else ""
+    status, resp = _request("POST", f"{BASE}/crm/v3/objects/contacts", token, {"properties": props})
+    return str(resp.get("id", "")) if status in (200, 201) else ""
