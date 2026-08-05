@@ -438,6 +438,7 @@ def run_daily(dry_run=False, limit=None):
         cursor = state.get("persona_cursor", 0)
         for i, (c, ed) in enumerate(zip(queue, generated)):
             persona = PERSONAS[cursor % len(PERSONAS)]
+            cursor += 1                       # advance per attempt → true round-robin
             touch, variant, cid = c["touch"], c["variant"], c["id"]
             subject, plain, html = assemble(ed, c, persona["name"])
             clean_first = (ed.get("clean_first_name") or "").strip()
@@ -451,7 +452,6 @@ def run_daily(dry_run=False, limit=None):
                 continue
 
             res = send_email(persona, c["email"], subject, plain, html=html)
-            cursor += 1
             if res.get("success"):
                 sent_today += 1
                 ts_ms = int(time.time() * 1000)
