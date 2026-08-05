@@ -266,18 +266,22 @@ def generate_batch(contacts):
         "Each contact has a VARIANT (A or B) — use its framing:\n"
         f"  {VARIANT_HOOKS['A']}\n"
         f"  {VARIANT_HOOKS['B']}\n\n"
-        "Each contact has a TOUCH number (1-4) in a sequence:\n"
-        "  1 = first email — the consultative opener in the variant's framing.\n"
-        "  2 = short follow-up (2-3 sentences) that gently resurfaces the first note AND "
-        "offers Chris Joffe's book 'All Clear' (on school crisis leadership) free to read or "
-        "listen to. Keep it warm; assume they simply missed the first note.\n"
-        f"  3 = value email — you may state this TRUE proof point: we support {SCHOOLS_SUPPORTED}. "
+        "FOLLOW-UP CADENCE (SellingSara playbook): outbound is a persistence sequence that "
+        "builds familiarity, not one-and-done. Each contact has a TOUCH number (1-4):\n"
+        "  1 = first email, the consultative opener in the variant's framing.\n"
+        "  2 = short follow-up (2-3 sentences) that gently resurfaces the first note AND offers "
+        "Chris Joffe's book 'All Clear' (on school crisis leadership) free to read or listen to. "
+        "Warm; assume they simply missed the first note, never a guilt-trip.\n"
+        f"  3 = value email. You may state this TRUE proof point: we support {SCHOOLS_SUPPORTED}. "
         "Then describe the KIND of outcome we deliver (we take safety planning, drills, and "
         "readiness off their plate so staff are genuinely ready). Invent NO specific schools, "
         "names, numbers, or testimonials.\n"
-        "  4 = brief, gracious breakup ('I'll stop reaching out — the door's open anytime').\n\n"
+        "  4 = brief, gracious breakup ('I'll stop reaching out, the door is open anytime'). "
+        "Warm, no pressure.\n"
+        "For touches 2-4, keep it SHORTER than touch 1 and briefly reference that you're "
+        "following up on your earlier note.\n\n"
         "SHARED / ROLE INBOX (addressType 'shared/role inbox', e.g. info@, office@): don't use "
-        "or invent a personal name. Open warmly ('Hi there — whoever's keeping an eye on the "
+        "or invent a personal name. Open warmly ('Hi there, whoever is keeping an eye on the "
         "inbox'), and ask who the right person is to talk to about school safety. clean_first_name "
         "must be empty for these.\n\n"
         "NAME SAFETY: the given firstName may be ALL CAPS, miscapitalized, a surname in the "
@@ -796,57 +800,131 @@ def _sum_today(state, key):
     return state.get(key, {}).get(today_str(), 0)
 
 
+def _sum_recent(counts_by_date, days):
+    from datetime import timedelta
+    t = pacific_today()
+    return sum(counts_by_date.get((t - timedelta(days=i)).isoformat(), 0) for i in range(days))
+
+
+def _sql_emails(limit=50):
+    """Emails of contacts currently at SQL status — the QA list Colleen should have."""
+    st, d = hs._request("POST", f"{hs.BASE}/crm/v3/objects/contacts/search", HUBSPOT_TOKEN, {
+        "filterGroups": [{"filters": [
+            {"propertyName": "organization_type_", "operator": "EQ", "value": hs.SCHOOL_TYPE},
+            {"propertyName": "joffe_outreach_status", "operator": "EQ", "value": "SQL"}]}],
+        "properties": ["email"], "limit": limit})
+    return [r.get("properties", {}).get("email", "") for r in (d.get("results", []) if st == 200 else [])]
+
+
 def run_report(dry_run=False, triggered_by_daily=False):
+    """Email Chris + Colleen an HTML dashboard: volume, replies, SQLs, deliverability,
+    and the A/B (Membership vs Assessment) comparison. Today + 7-day from state counters,
+    Lifetime live from HubSpot."""
     state = load_state()
     today = today_str()
-    if not dry_run and not triggered_by_daily and state.get("last_report_run") == today:
-        log.info("Report already sent today — skipping.")
-        return
     try:
-        # lifetime A/B pulled live from HubSpot; today's numbers from state
-        life = {
-            "A": {"sent": _count(variant="A"), "sql": _count("SQL", "A"), "mql": _count("MQL", "A"),
-                  "replied": _count("Replied", "A")},
-            "B": {"sent": _count(variant="B"), "sql": _count("SQL", "B"), "mql": _count("MQL", "B"),
-                  "replied": _count("Replied", "B")},
-        }
-        t = {k: _sum_today(state, f"daily_{k}") for k in
-             ["sent_count", "new_count", "reply_count", "sql_count", "mql_count",
-              "bounce_count", "unsub_count"]}
-        va, vb = life["A"], life["B"]
+        dsc = state.get("daily_sent_count", {})
+        sent_total = sum(dsc.values())
+        # Lifetime, live from HubSpot (status = the contact's latest state)
+        c_contacted = _count("Contacted"); c_replied = _count("Replied"); c_sql = _count("SQL")
+        c_bounced = _count("Bounced"); c_unsub = _count("Unsubscribed"); c_skip = _count("Skipped-Customer")
+        reached = c_contacted + c_replied + c_sql + c_bounced + c_unsub
+        replies = c_replied + c_sql          # MQL-path stamps 'Replied', SQL-path stamps 'SQL'
+        mql = c_replied
+        ab = {v: {"reached": _count(variant=v), "sql": _count("SQL", v),
+                  "mql": _count("Replied", v),
+                  "replied": _count("Replied", v) + _count("SQL", v)} for v in ("A", "B")}
+        sql_list = _sql_emails()
 
-        def arm(v):
-            reached = v["sent"] or 0
-            conv = (v["sql"] + v["mql"] + v["replied"])
-            rate = f"{conv/reached:.1%}" if reached else "—"
-            return f"reached {reached} · SQL {v['sql']} · MQL {v['mql']} · replied {v['replied']} · engaged {rate}"
+        def td(k): return _sum_today(state, k)
+        def wk(k): return _sum_recent(state.get(k, {}), 7)
+        def pct(n, d): return f"{100.0 * n / d:.1f}%" if d else "—"
 
-        subject = f"[Joffe SDR] {today} — {t['sent_count']} sent"
+        rows = [
+            ("Emails sent (all touches)", td("daily_sent_count"), wk("daily_sent_count"), sent_total, False),
+            ("New schools reached",       td("daily_new_count"),   wk("daily_new_count"),   reached, False),
+            ("Replies",                   td("daily_reply_count"), wk("daily_reply_count"), replies, False),
+            ("SQLs &rarr; Colleen",       td("daily_sql_count"),   wk("daily_sql_count"),   c_sql, True),
+            ("MQLs",                      td("daily_mql_count"),   wk("daily_mql_count"),   mql, False),
+            ("Hard bounces",              td("daily_bounce_count"),wk("daily_bounce_count"),c_bounced, False),
+            ("Unsubscribes",              td("daily_unsub_count"), wk("daily_unsub_count"), c_unsub, False),
+        ]
+        subject = (f"[Joffe SDR] {today} — {td('daily_sql_count')} SQLs today, "
+                   f"{td('daily_sent_count')} sent (cap {daily_cap()})")
+
+        # Plain-text fallback
+        def pr(l, a, b, c): return f"  {l:<26}{a:>8,}{b:>10,}{c:>12,}\n"
         body = (
-            f"Joffe School-Safety SDR — {today}\n"
-            f"{'='*44}\n\n"
-            f"TODAY\n"
-            f"  Sent:            {t['sent_count']}  (new {t['new_count']}, follow-ups "
-            f"{t['sent_count']-t['new_count']})\n"
-            f"  Replies:         {t['reply_count']}\n"
-            f"  SQLs → Colleen:  {t['sql_count']}\n"
-            f"  MQLs:            {t['mql_count']}\n"
-            f"  Bounces:         {t['bounce_count']}\n"
-            f"  Unsubscribes:    {t['unsub_count']}\n\n"
-            f"A/B (lifetime, from HubSpot)\n"
-            f"  A · Membership (AAA):    {arm(va)}\n"
-            f"  B · Assessment (Swiss):  {arm(vb)}\n\n"
-            f"Cap today: {daily_cap()} (week {weeks_since_launch()}). "
-            f"Senders: Jessica Dean + Ryan Andrews (round-robin).\n\n"
-            f"—Joffe SDR (automated)"
+            f"Joffe School-Safety SDR dashboard\nAs of {today}\n{'=' * 58}\n\n"
+            f"  {'':<26}{'TODAY':>8}{'7 DAYS':>10}{'LIFETIME':>12}\n  {'-' * 56}\n"
+            + "".join(pr(l.replace('&rarr;', '->'), a, b, c) for l, a, b, c, _ in rows)
+            + f"\n  Lifetime reply rate: {pct(replies, reached)}   SQL rate: {pct(c_sql, reached)}\n"
+            + f"  Customers shielded (QB + gate): {c_skip:,}\n\n"
+            f"A/B (lifetime)\n"
+            f"  A Membership:  reached {ab['A']['reached']:,}, replies {ab['A']['replied']}, "
+            f"MQL {ab['A']['mql']}, SQL {ab['A']['sql']}, engaged {pct(ab['A']['replied'], ab['A']['reached'])}\n"
+            f"  B Assessment:  reached {ab['B']['reached']:,}, replies {ab['B']['replied']}, "
+            f"MQL {ab['B']['mql']}, SQL {ab['B']['sql']}, engaged {pct(ab['B']['replied'], ab['B']['reached'])}\n\n"
+            f"Sales-Qualified Leads ({len(sql_list)}):\n"
+            + (("\n".join(f"  - {e}" for e in sql_list)) if sql_list else "  (none yet)")
+            + f"\n\nSenders: Jessica Dean + Ryan Andrews (round-robin). Week {weeks_since_launch()}.\n"
+            f"-Joffe SDR (automated)"
         )
+
+        def hr(l, a, b, c, hi):
+            bg = " background:#f2f8f2;" if hi else ""
+            return (f"<tr style='border-top:1px solid #e5e5e5;{bg}'>"
+                    f"<td style='padding:6px 14px'>{l}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{a:,}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{b:,}</td>"
+                    f"<td align='right' style='padding:6px 14px;font-weight:600'>{c:,}</td></tr>")
+
+        def abrow(name, v):
+            return (f"<tr style='border-top:1px solid #e5e5e5'><td style='padding:6px 14px'>{name}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{v['reached']:,}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{v['replied']}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{v['mql']}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{v['sql']}</td>"
+                    f"<td align='right' style='padding:6px 14px'>{pct(v['replied'], v['reached'])}</td></tr>")
+
+        html = (
+            "<div style='font-family:Arial,Helvetica,sans-serif;font-size:14px;color:#222'>"
+            "<h2 style='margin:0 0 2px'>Joffe School-Safety SDR</h2>"
+            f"<div style='color:#888;margin-bottom:14px'>Jessica Dean &amp; Ryan Andrews &middot; "
+            f"as of {today} &middot; daily cap {daily_cap()} (week {weeks_since_launch()})</div>"
+            "<table style='border-collapse:collapse;font-size:14px;min-width:440px'>"
+            "<thead><tr style='background:#eee'><th align='left' style='padding:8px 14px'>&nbsp;</th>"
+            "<th align='right' style='padding:8px 14px'>Today</th><th align='right' style='padding:8px 14px'>7 days</th>"
+            "<th align='right' style='padding:8px 14px'>Lifetime</th></tr></thead><tbody>"
+            + "".join(hr(l, a, b, c, hi) for l, a, b, c, hi in rows)
+            + "</tbody></table>"
+            f"<p style='margin:14px 0 4px'><b>Lifetime reply rate:</b> {pct(replies, reached)} &nbsp;&nbsp;"
+            f"<b>SQL rate:</b> {pct(c_sql, reached)} &nbsp;&nbsp;"
+            f"<b>Customers shielded (QB + gate):</b> {c_skip:,}</p>"
+            "<h3 style='margin:18px 0 4px'>A/B test (lifetime)</h3>"
+            "<table style='border-collapse:collapse;font-size:14px;min-width:440px'>"
+            "<thead><tr style='background:#eee'><th align='left' style='padding:8px 14px'>Arm</th>"
+            "<th align='right' style='padding:8px 14px'>Reached</th><th align='right' style='padding:8px 14px'>Replies</th>"
+            "<th align='right' style='padding:8px 14px'>MQL</th><th align='right' style='padding:8px 14px'>SQL</th>"
+            "<th align='right' style='padding:8px 14px'>Engaged</th></tr></thead><tbody>"
+            + abrow("A &middot; Membership", ab["A"]) + abrow("B &middot; Assessment", ab["B"])
+            + "</tbody></table>"
+            f"<p style='margin:14px 0 4px'><b>Sales-Qualified Leads ({len(sql_list)})</b> (with Colleen):</p>"
+            + ("<ul style='margin:4px 0 0;padding-left:22px'>" + "".join(f"<li>{e}</li>" for e in sql_list)
+               + "</ul>" if sql_list else "<p style='color:#888'>(none yet)</p>")
+            + "<p style='color:#999;font-size:12px;max-width:560px'>Today &amp; 7-day build over time; "
+            "Lifetime is live from HubSpot. Follow-ups (SellingSara 4-touch: day 3 / 7 / 14) send before "
+            "new contacts each day.</p></div>"
+        )
+
         if dry_run:
-            log.info(f"[DRY RUN] report:\n{body}")
-        else:
-            send_email(PERSONAS[0], REPORT_TO[0], subject, body, cc=REPORT_TO[1])
-            state["last_report_run"] = today
-            save_state(state)
-            log.info("Report sent to Chris + Colleen.")
+            log.info("[DRY RUN] dashboard (plain):\n" + body)
+            return
+        res = send_email(PERSONAS[0], REPORT_TO[0], subject, body, html=html, cc=REPORT_TO[1])
+        state["last_report_run"] = today
+        save_state(state)
+        log.info("Report sent to Chris + Colleen." if res.get("success")
+                 else f"Report send failed: {res.get('error')}")
     except Exception as e:
         log.exception(f"report failed: {e}")
 
