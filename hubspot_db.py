@@ -147,6 +147,18 @@ def ensure_properties(token, group="contactinformation"):
 # Company lifecycle stages that mean "don't cold-email anyone here" (SQL or higher).
 SKIP_COMPANY_STAGES = {"salesqualifiedlead", "opportunity", "customer", "evangelist"}
 
+# Standard HubSpot lifecycle ordering — used so a reply can only ADVANCE a contact's
+# stage, never drag a more-advanced record (opportunity/customer) backward.
+_STAGE_RANK = {
+    "": 0, "other": 0, "subscriber": 1, "lead": 2, "marketingqualifiedlead": 3,
+    "salesqualifiedlead": 4, "opportunity": 5, "customer": 6, "evangelist": 7,
+}
+
+
+def _current_lifecycle(token, cid):
+    _, d = _request("GET", f"{BASE}/crm/v3/objects/contacts/{cid}?properties=lifecyclestage", token)
+    return (d.get("properties", {}).get("lifecyclestage") or "").strip().lower()
+
 
 def _deal_flags(token, deal_id):
     """(is_won, is_open) for a deal, using HubSpot's pipeline-agnostic closed flags."""
@@ -439,6 +451,13 @@ def upsert_lead(token, email, stage, first="", last="", company="", phone="",
             props[drill] = f"Joffe SDR – {agent_name}" if agent_name else "Joffe SDR"
 
     if existing:
+        # Never downgrade: if the contact is already at or beyond the target stage
+        # (e.g. opportunity/customer), leave lifecycle AND owner untouched and only
+        # update supporting fields (name/phone). Advancing writes go through normally.
+        cur = _current_lifecycle(token, existing)
+        if _STAGE_RANK.get(stage, 0) <= _STAGE_RANK.get(cur, 0):
+            props.pop("lifecyclestage", None)
+            props.pop("hubspot_owner_id", None)
         status, resp = _request("PATCH", f"{BASE}/crm/v3/objects/contacts/{existing}", token,
                                 {"properties": props})
         return existing if status in (200, 201) else ""
