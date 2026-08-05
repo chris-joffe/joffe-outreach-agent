@@ -337,11 +337,39 @@ def cta_block(variant, touch):
     return plain, html
 
 
+# Belt-and-suspenders: even with the prompt rules, Haiku sometimes emits AI "tells".
+# We deterministically strip them post-generation so they can never reach a recipient:
+#   • em/en dashes (replaced with commas)
+#   • whole sentences that defensively deny selling, or use doom/scare framing
+_TELL_RE = re.compile(
+    r"not a (sales )?(tool|pitch|sales pitch)|not selling|no catch|no strings|"
+    r"no obligation|isn'?t a (sales )?pitch|this is ?n'?t a pitch|"
+    r"before it'?s too late|hope it (all )?holds", re.IGNORECASE)
+
+
+def scrub_body(text):
+    text = re.sub(r"\s*—\s*", ", ", text or "")
+    text = re.sub(r"\s*–\s*", "-", text)
+    out_lines = []
+    for line in text.split("\n"):
+        if not line.strip():
+            out_lines.append("")
+            continue
+        sents = re.split(r"(?<=[.!?])\s+", line.strip())
+        kept = [s for s in sents if not _TELL_RE.search(s)]
+        out_lines.append(" ".join(kept))
+    out = "\n".join(out_lines)
+    out = re.sub(r"\s+([,.;:!?])", r"\1", out)   # no space before punctuation
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
 def assemble(ed, contact, sender_name):
     """Build (subject, plain, html) from the generated body + CTA + signature."""
     variant, touch = contact.get("variant", "A"), contact.get("touch", 1)
-    subject = ed.get("subject") or _fallback(contact)["subject"]
-    body = (ed.get("body") or _fallback(contact)["body"]).rstrip()
+    subject = (ed.get("subject") or _fallback(contact)["subject"]).replace("—", ": ").replace("–", "-")
+    body = scrub_body(ed.get("body") or _fallback(contact)["body"]).rstrip()
     cta_p, cta_h = cta_block(variant, touch)
     sig_p = f"\n\n{sender_name}\n{COMPANY_NAME}"
     sig_h = f"<br><br>{html_escape(sender_name)}<br>{COMPANY_NAME}"
