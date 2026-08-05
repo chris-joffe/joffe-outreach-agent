@@ -26,6 +26,11 @@ on:
         required: false
         default: ""
         type: string
+      bcc:
+        description: "BCC address on every send this run (for smoke tests; blank = none)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write            # lets the built-in token commit state.json back
@@ -67,6 +72,7 @@ jobs:
           JESSICA_APP_PASSWORD: ${{ secrets.JESSICA_APP_PASSWORD }}
           RYAN_APP_PASSWORD:    ${{ secrets.RYAN_APP_PASSWORD }}
           JOFFE_LAUNCH_DATE:  ${{ vars.JOFFE_LAUNCH_DATE }}
+          OUTREACH_BCC:       ${{ github.event.inputs.bcc }}
         run: |
           ARGS="--mode ${{ steps.mode.outputs.mode }}"
           [ "${{ steps.mode.outputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"

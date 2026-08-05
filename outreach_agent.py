@@ -340,7 +340,7 @@ def assemble(ed, contact, sender_name):
 
 
 # ─── SMTP send (per persona) ──────────────────────────────────────────────────
-def send_email(persona, to, subject, plain, html=None, cc=None):
+def send_email(persona, to, subject, plain, html=None, cc=None, bcc=None):
     import smtplib
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
@@ -359,7 +359,8 @@ def send_email(persona, to, subject, plain, html=None, cc=None):
     msg.attach(MIMEText(plain, "plain"))
     if html:
         msg.attach(MIMEText(html, "html"))
-    recipients = [to] + ([cc] if cc else [])
+    # bcc is added to the envelope recipients only — never as a header (that's the point).
+    recipients = [to] + ([cc] if cc else []) + ([bcc] if bcc else [])
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=_ssl_ctx()) as s:
             s.login(user, pw)
@@ -479,7 +480,8 @@ def run_daily(dry_run=False, limit=None):
                     log.info(f"  --- SAMPLE ---\n{plain}\n  --------------")
                 continue
 
-            res = send_email(persona, c["email"], subject, plain, html=html)
+            res = send_email(persona, c["email"], subject, plain, html=html,
+                             bcc=os.environ.get("OUTREACH_BCC") or None)
             if res.get("success"):
                 sent_today += 1
                 ts_ms = int(time.time() * 1000)
