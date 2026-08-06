@@ -37,7 +37,7 @@ import time
 import urllib.request
 import urllib.error
 from datetime import date, datetime
-from html import escape as html_escape
+from html import escape as html_escape, unescape as html_unescape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -616,18 +616,66 @@ def classify_reply(sender, subject, body):
     return "genuine"
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+def _html_to_text(html):
+    """Strip an HTML email part down to readable text (no external deps)."""
+    html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    html = re.sub(r"(?i)<br\s*/?>", "\n", html)
+    html = re.sub(r"(?i)</(p|div|tr|li|h[1-6]|blockquote)>", "\n", html)
+    text = html_unescape(_HTML_TAG_RE.sub("", html))
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+def _reply_body(msg):
+    """Extract a reply's readable text. Prefer text/plain, but fall back to a tag-stripped
+    text/html part so an HTML-only reply is NEVER seen as empty (which blanks the forward to
+    Colleen AND makes the interest classifier default to 'interested')."""
+    plain, html = "", ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_disposition() == "attachment":
+                continue
+            ct = part.get_content_type()
+            if ct == "text/plain" and not plain:
+                p = part.get_payload(decode=True)
+                if p:
+                    plain = p.decode(part.get_content_charset() or "utf-8", errors="replace")
+            elif ct == "text/html" and not html:
+                p = part.get_payload(decode=True)
+                if p:
+                    html = p.decode(part.get_content_charset() or "utf-8", errors="replace")
+    else:
+        p = msg.get_payload(decode=True)
+        if p:
+            b = p.decode(msg.get_content_charset() or "utf-8", errors="replace")
+            if msg.get_content_type() == "text/html":
+                html = b
+            else:
+                plain = b
+    if plain.strip():
+        return plain
+    if html.strip():
+        return _html_to_text(html)
+    return ""
+
 def classify_interest(subject, body):
     """LLM triage of a genuine reply → (auto, opt_out, interested, reason).
     interested = any real curiosity / willingness to talk or learn more (broad, per Chris)."""
+    # Never guess "interested" from an empty/blank body — that would manufacture a bogus lead.
+    if not (body or "").strip():
+        return False, False, False, "no readable message body — needs human review"
     try:
         text = _anthropic({
             "model": GEN_MODEL, "max_tokens": 300,
             "system": ("Classify a reply to a cold school-safety outreach email. Return ONLY "
                        "JSON: {\"auto\":bool,\"opt_out\":bool,\"interested\":bool,\"reason\":\"...\"}. "
                        "auto=true if it's an automated/OOO/no-reply bounce-back. opt_out=true if "
-                       "they ask to stop/unsubscribe. interested=true for ANY genuine curiosity, "
-                       "question, or willingness to talk/learn more (be generous). reason = a short "
-                       "phrase."),
+                       "they ask to stop/unsubscribe OR clearly decline ('no', 'no thanks', 'not "
+                       "interested', 'please stop') — but NOT a soft deferral like 'not right now'. "
+                       "interested=true for ANY genuine curiosity, question, or willingness to "
+                       "talk/learn more (be generous), but NEVER when opt_out is true. reason = a "
+                       "short phrase."),
             "messages": [{"role": "user", "content": f"Subject: {subject}\n\n{body[:1500]}"}],
         }, timeout=60).strip()
         if text.startswith("```"):
@@ -672,14 +720,7 @@ def _check_mailbox(persona, state, dry_run):
                 msg = emaillib.message_from_bytes(data[0][1])
                 sender = msg.get("From", "Unknown")
                 subject = msg.get("Subject", "")
-                body = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        if part.get_content_type() == "text/plain":
-                            body = part.get_payload(decode=True).decode(errors="replace")
-                            break
-                else:
-                    body = msg.get_payload(decode=True).decode(errors="replace")
+                body = _reply_body(msg)
                 _, sender_email = parse_from(sender)
                 auto_hdr = (msg.get("Auto-Submitted", "") or "").lower()
                 is_auto = ("auto-replied" in auto_hdr or "auto-generated" in auto_hdr
@@ -779,8 +820,10 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
     hs_line = f"HubSpot: {link}\n\n" if link else ""
     intro = (f"{name} replied to our school-safety outreach and looks like a real lead"
              if is_sql else f"{name} just replied to our outreach — flagging for you")
+    _msg = (body or "").strip()
+    _msg = _msg[:4000] + ("\n…(truncated)" if len(_msg) > 4000 else "")
     body_out = (f"Hi Colleen,\n\n{intro} ({reason}).\n\n{hs_line}"
-                f"Here's what they said:\n\n---\n{body[:1200]}\n---\n\n"
+                f"Here's the full exchange:\n\n---\n{_msg}\n---\n\n"
                 f"{'Assigned to you in HubSpot. ' if is_sql else ''}Thanks!\n{persona['name']}")
     send_email(persona, COLLEEN_EMAIL, subject, body_out, cc=CHRIS_EMAIL)
 
