@@ -708,7 +708,9 @@ def _check_mailbox(persona, state, dry_run):
         return
     log.info(f"Checking {persona['key']} inbox for replies...")
     try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com", ssl_context=_ssl_ctx())
+        # timeout is essential: without it a stalled Gmail socket hangs the run, which would
+        # block the daily-send self-heal (reply_check) and hold the concurrency lock.
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", ssl_context=_ssl_ctx(), timeout=60)
         mail.login(persona["email"], pw)
         mail.select("INBOX")
         _, ids = mail.search(None, "UNSEEN")
