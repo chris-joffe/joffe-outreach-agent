@@ -1,12 +1,14 @@
 {
-  "persona_cursor": 9,
-  "last_daily_run": "2026-08-05",
-  "last_report_run": "2026-08-05",
+  "persona_cursor": 59,
+  "last_daily_run": "2026-08-06",
+  "last_report_run": "2026-08-06",
   "daily_sent_count": {
-    "2026-08-05": 9
+    "2026-08-05": 9,
+    "2026-08-06": 50
   },
   "daily_new_count": {
-    "2026-08-05": 8
+    "2026-08-05": 8,
+    "2026-08-06": 50
   },
   "daily_reply_count": {},
   "daily_sql_count": {},
@@ -15,10 +17,12 @@
   "daily_unsub_count": {},
   "daily_variant_sent": {
     "A": {
-      "2026-08-05": 8
+      "2026-08-05": 8,
+      "2026-08-06": 20
     },
     "B": {
-      "2026-08-05": 1
+      "2026-08-05": 1,
+      "2026-08-06": 30
     }
   }
 }
