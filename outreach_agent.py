@@ -830,7 +830,7 @@ def _sql_emails(limit=50):
     return [r.get("properties", {}).get("email", "") for r in (d.get("results", []) if st == 200 else [])]
 
 
-def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, replies, today):
+def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, replies, today, table=None):
     """Write the Joffe SDR's slice into command-center/data/agent-performance.json so it
     shows in the CEO morning briefing + the combined EOD email. One tile for the whole
     pipeline (Jessica + Ryan round-robin one HubSpot pipeline, so leads can't be split per
@@ -874,6 +874,8 @@ def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, repli
             {"label": "→ Colleen", "value": str(sql)},
         ],
         "note": f"Reply rate {reply_rate} · {reached:,} reached lifetime · Jessica + Ryan (round-robin)",
+        # Detailed Today / 7-day / Lifetime table for the combined EOD email.
+        "table": table or [],
     }
     doc["generated_at"] = now
     payload = json.dumps({
@@ -990,9 +992,11 @@ def run_report(dry_run=False, triggered_by_daily=False):
         )
 
         # Keep the CEO briefing + combined EOD email fed (best-effort; never fatal).
+        perf_table = [[l.replace("&rarr;", "→"), a, b, c] for l, a, b, c, _ in rows]
         update_agent_performance(
             sent_today=td("daily_sent_count"), replies_7d=wk("daily_reply_count"),
             sql=c_sql, mql=mql, reached=reached, replies=replies, today=today,
+            table=perf_table,
         )
 
         if dry_run:
