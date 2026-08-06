@@ -24,6 +24,7 @@ Sibling of the Get CPR Done "Vida" agent, tailored for Joffe:
 Modes:  setup | daily | reply_check | report
 """
 import argparse
+import base64
 import hashlib
 import json
 import logging
@@ -829,10 +830,68 @@ def _sql_emails(limit=50):
     return [r.get("properties", {}).get("email", "") for r in (d.get("results", []) if st == 200 else [])]
 
 
+def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, replies, today):
+    """Write the Joffe SDR's slice into command-center/data/agent-performance.json so it
+    shows in the CEO morning briefing + the combined EOD email. One tile for the whole
+    pipeline (Jessica + Ryan round-robin one HubSpot pipeline, so leads can't be split per
+    mailbox). No-op if COMMAND_CENTER_TOKEN is unset. Read-modify-writes the agents.joffe key."""
+    token = os.environ.get("COMMAND_CENTER_TOKEN")
+    if not token:
+        log.info("agent-performance: COMMAND_CENTER_TOKEN unset — skipping slice update")
+        return
+    api = "https://api.github.com/repos/chris-joffe/chris-joffe-command-center/contents/data/agent-performance.json"
+
+    def _req(method, data=None):
+        req = urllib.request.Request(api, data=data, method=method)
+        req.add_header("Authorization", f"Bearer {token}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("User-Agent", "joffe-sdr-agent")
+        with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as resp:
+            return json.loads(resp.read().decode())
+
+    try:
+        cur = _req("GET")
+        doc = json.loads(base64.b64decode(cur["content"]).decode())
+        sha = cur["sha"]
+    except Exception as e:
+        log.error(f"agent-performance: read failed — {e}")
+        return
+
+    now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    reply_rate = f"{(100.0 * replies / reached):.1f}%" if reached else "—"
+    paused = daily_cap() == 0
+    doc.setdefault("agents", {})["joffe"] = {
+        "name": "Jessica & Ryan",
+        "role": "Joffe · School-Safety SDR",
+        "status": "paused" if paused else "healthy",
+        "last_run": now,
+        "headline": (f"Paused — awaiting launch" if paused
+                     else f"{sql} SQLs · {mql} MQLs routed to Colleen"),
+        "kpis": [
+            {"label": "Sent today", "value": f"{sent_today:,}"},
+            {"label": "Replies 7d", "value": f"{replies_7d:,}"},
+            {"label": "SQLs (life)", "value": str(sql), "tone": "good"},
+            {"label": "→ Colleen", "value": str(sql)},
+        ],
+        "note": f"Reply rate {reply_rate} · {reached:,} reached lifetime · Jessica + Ryan (round-robin)",
+    }
+    doc["generated_at"] = now
+    payload = json.dumps({
+        "message": f"agent-performance: Joffe SDR slice {today}",
+        "content": base64.b64encode(json.dumps(doc, indent=2).encode()).decode(),
+        "sha": sha,
+    }).encode()
+    try:
+        _req("PUT", payload)
+        log.info("agent-performance: Joffe SDR slice updated")
+    except Exception as e:
+        log.error(f"agent-performance: write failed — {e}")
+
+
 def run_report(dry_run=False, triggered_by_daily=False):
-    """Email Chris + Colleen an HTML dashboard: volume, replies, SQLs, deliverability,
-    and the A/B (Membership vs Assessment) comparison. Today + 7-day from state counters,
-    Lifetime live from HubSpot."""
+    """Email Colleen an HTML dashboard: volume, replies, SQLs, deliverability, and the A/B
+    (Membership vs Assessment) comparison. Today + 7-day from state counters, Lifetime live
+    from HubSpot. Also writes the command-center slice (Chris's view is the combined EOD email)."""
     state = load_state()
     today = today_str()
     try:
@@ -930,13 +989,20 @@ def run_report(dry_run=False, triggered_by_daily=False):
             "new contacts each day.</p></div>"
         )
 
+        # Keep the CEO briefing + combined EOD email fed (best-effort; never fatal).
+        update_agent_performance(
+            sent_today=td("daily_sent_count"), replies_7d=wk("daily_reply_count"),
+            sql=c_sql, mql=mql, reached=reached, replies=replies, today=today,
+        )
+
         if dry_run:
             log.info("[DRY RUN] dashboard (plain):\n" + body)
             return
-        res = send_email(PERSONAS[0], REPORT_TO[0], subject, body, html=html, cc=REPORT_TO[1])
+        # Colleen only — Chris's Joffe view is the single combined all-SDR EOD email.
+        res = send_email(PERSONAS[0], COLLEEN_EMAIL, subject, body, html=html)
         state["last_report_run"] = today
         save_state(state)
-        log.info("Report sent to Chris + Colleen." if res.get("success")
+        log.info("Report sent to Colleen." if res.get("success")
                  else f"Report send failed: {res.get('error')}")
     except Exception as e:
         log.exception(f"report failed: {e}")

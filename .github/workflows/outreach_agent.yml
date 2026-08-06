@@ -77,6 +77,7 @@ jobs:
           JESSICA_APP_PASSWORD: ${{ secrets.JESSICA_APP_PASSWORD }}
           RYAN_APP_PASSWORD:    ${{ secrets.RYAN_APP_PASSWORD }}
           JOFFE_LAUNCH_DATE:  ${{ vars.JOFFE_LAUNCH_DATE }}
+          COMMAND_CENTER_TOKEN: ${{ secrets.COMMAND_CENTER_TOKEN }}
           OUTREACH_BCC:       ${{ github.event.inputs.bcc }}
           TEST_EMAIL_TO:      ${{ github.event.inputs.test_to }}
         run: |
