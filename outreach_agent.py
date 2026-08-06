@@ -60,6 +60,7 @@ PERSONAS = [
 COLLEEN_LINK = ("https://www.joffeemergencyservices.com/meetings/colleens/"
                 "emergency-management-update?uuid=8a98d109-4d1f-450b-b052-3789356e123f")
 ASSESSMENT_LINK = "https://www.joffeemergencyservices.com/school-assessment"
+ALL_CLEAR_URL = "https://www.amazon.com/All-Clear-Lessons-Decade-Managing/dp/1394178077"
 SCHOOLS_SUPPORTED = "2,000 K-12 schools"
 
 # ─── Cadence & volume ─────────────────────────────────────────────────────────
@@ -275,9 +276,9 @@ def generate_batch(contacts):
         "FOLLOW-UP CADENCE (SellingSara playbook): outbound is a persistence sequence that "
         "builds familiarity, not one-and-done. Each contact has a TOUCH number (1-4):\n"
         "  1 = first email, the consultative opener in the variant's framing.\n"
-        "  2 = short follow-up (2-3 sentences) that gently resurfaces the first note AND offers "
-        "Chris Joffe's book 'All Clear' (on school crisis leadership) free to read or listen to. "
-        "Warm; assume they simply missed the first note, never a guilt-trip.\n"
+        "  2 = short follow-up (2-3 sentences) that gently resurfaces the first note. Warm; "
+        "assume they simply missed the first note, never a guilt-trip. Do NOT mention any book "
+        "or offer anything here, a note about the CEO's book is appended automatically.\n"
         f"  3 = value email. You may state this TRUE proof point: we support {SCHOOLS_SUPPORTED}. "
         "Then describe the KIND of outcome we deliver (we take safety planning, drills, and "
         "readiness off their plate so staff are genuinely ready). Invent NO specific schools, "
@@ -330,11 +331,14 @@ def generate_batch(contacts):
 
 def cta_block(variant, touch):
     """Return (plain_suffix, html_suffix) for the call-to-action, by variant & touch."""
-    if touch == 2:   # book offer: invite a reply, keep the arm's link as a soft option
-        plain = ("\n\nWant a copy of All Clear? Just reply and I'll send it over, to read or "
-                 "listen, on us. Happy to mail a physical copy if you send an address.")
-        html = ("<br><br>Want a copy of <em>All Clear</em>? Just reply and I'll send it over, "
-                "to read or listen, on us. Happy to mail a physical copy if you send an address.")
+    if touch == 2:   # book mention: point them to All Clear on Amazon
+        plain = ("\n\nOur founder and CEO wrote a book on school crisis leadership called "
+                 "All Clear: Lessons from a Decade Managing School Crises that a lot of heads "
+                 "of school and school leaders find useful to read or listen to: " + ALL_CLEAR_URL)
+        html = ("<br><br>Our founder and CEO wrote a book on school crisis leadership called "
+                f"<a href=\"{html_escape(ALL_CLEAR_URL, quote=True)}\"><em>All Clear: Lessons "
+                "from a Decade Managing School Crises</em></a> that a lot of heads of school and "
+                "school leaders find useful to read or listen to.")
         return plain, html
     if variant == "B":
         plain = (f"\n\nIf you're curious, the free 5-minute assessment is here: {ASSESSMENT_LINK}\n"
