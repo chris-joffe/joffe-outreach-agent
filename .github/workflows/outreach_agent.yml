@@ -7,6 +7,8 @@ on:
     # triggered by the daily run itself (no separate report cron).
     - cron: "0 14 * * 1-5"                 # daily send (+ follow-ups) — M–F 7:00 AM PDT
     - cron: "0 16,18,20,22 * * 1-5"        # reply_check     — every 2h 9AM–3PM PDT
+    - cron: "50 23 * * 1-5"                # report — 4:50 PM PDT: refresh command-center slice
+                                           #   for the briefing + combined EOD email (fires even when paused)
   workflow_dispatch:
     inputs:
       mode:
@@ -64,6 +66,7 @@ jobs:
           else
             case "${{ github.event.schedule }}" in
               "0 14 * * 1-5") echo "mode=daily"       >> $GITHUB_OUTPUT ;;
+              "50 23 * * 1-5") echo "mode=report"     >> $GITHUB_OUTPUT ;;
               *)              echo "mode=reply_check" >> $GITHUB_OUTPUT ;;
             esac
             echo "dry_run=false" >> $GITHUB_OUTPUT
