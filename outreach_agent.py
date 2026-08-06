@@ -849,18 +849,10 @@ def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, repli
         with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as resp:
             return json.loads(resp.read().decode())
 
-    try:
-        cur = _req("GET")
-        doc = json.loads(base64.b64decode(cur["content"]).decode())
-        sha = cur["sha"]
-    except Exception as e:
-        log.error(f"agent-performance: read failed — {e}")
-        return
-
     now = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
     reply_rate = f"{(100.0 * replies / reached):.1f}%" if reached else "—"
     paused = daily_cap() == 0
-    doc.setdefault("agents", {})["joffe"] = {
+    slice_data = {
         "name": "Jessica & Ryan",
         "role": "Joffe · School-Safety SDR",
         "status": "paused" if paused else "healthy",
@@ -877,17 +869,36 @@ def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, repli
         # Detailed Today / 7-day / Lifetime table for the combined EOD email.
         "table": table or [],
     }
-    doc["generated_at"] = now
-    payload = json.dumps({
-        "message": f"agent-performance: Joffe SDR slice {today}",
-        "content": base64.b64encode(json.dumps(doc, indent=2).encode()).decode(),
-        "sha": sha,
-    }).encode()
-    try:
-        _req("PUT", payload)
-        log.info("agent-performance: Joffe SDR slice updated")
-    except Exception as e:
-        log.error(f"agent-performance: write failed — {e}")
+    # Read-modify-write with retry on 409: the GCD agents (Vida, Elena) write this same file in
+    # the same window, so a stale-SHA conflict is expected — re-read and retry.
+    for attempt in range(5):
+        try:
+            cur = _req("GET")
+            doc = json.loads(base64.b64decode(cur["content"]).decode())
+            sha = cur["sha"]
+        except Exception as e:
+            log.error(f"agent-performance: read failed — {e}")
+            return
+        doc.setdefault("agents", {})["joffe"] = slice_data
+        doc["generated_at"] = now
+        payload = json.dumps({
+            "message": f"agent-performance: Joffe SDR slice {today}",
+            "content": base64.b64encode(json.dumps(doc, indent=2).encode()).decode(),
+            "sha": sha,
+        }).encode()
+        try:
+            _req("PUT", payload)
+            log.info("agent-performance: Joffe SDR slice updated")
+            return
+        except urllib.error.HTTPError as e:
+            if e.code == 409 and attempt < 4:
+                time.sleep(1 + attempt)
+                continue
+            log.error(f"agent-performance: write failed — {e}")
+            return
+        except Exception as e:
+            log.error(f"agent-performance: write failed — {e}")
+            return
 
 
 def run_report(dry_run=False, triggered_by_daily=False):
