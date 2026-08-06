@@ -247,6 +247,9 @@ def generate_batch(contacts):
     system = (
         f"You are a business development associate at {COMPANY_NAME}, a school safety and "
         f"emergency-management partner that supports {SCHOOLS_SUPPORTED} across the country.\n\n"
+        "GUIDING PRINCIPLE: our job is to build Joffe's credibility and be genuinely useful even "
+        "to a school that will never buy. Lead with a helpful idea or resource, not the ask. A "
+        "reader who isn't ready to buy should still come away thinking better of Joffe.\n"
         "APPROACH (from our SDR playbook, grounded in what actually converts): consultative "
         "and human, never salesy, and never overselling. Under 100 words. ONE clear hook only. "
         "Do not stack benefits or list features. No 'I hope this finds you well'. NEVER use the "
