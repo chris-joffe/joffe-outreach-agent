@@ -930,6 +930,21 @@ def run_report(dry_run=False, triggered_by_daily=False):
 
 
 # ─── SETUP (one-time / idempotent) ────────────────────────────────────────────
+def run_test_send():
+    """Send ONE real outreach-style email from Jessica to TEST_EMAIL_TO so a human can
+    reply and exercise the reply pipeline. Touches no HubSpot data."""
+    to = os.environ.get("TEST_EMAIL_TO", "").strip()
+    if not to:
+        log.error("TEST_EMAIL_TO not set."); return
+    persona = PERSONAS[0]   # Jessica — reply lands in her inbox
+    first = to.split("@")[0].split(".")[0].split("+")[0].title() or "there"
+    c = {"variant": "A", "touch": 1, "firstName": first, "company": "your school", "is_role": False}
+    subject, plain, html = assemble(_fallback(c), c, persona["name"])
+    res = send_email(persona, to, subject, plain, html=html)
+    log.info(f"Test email to {redact_email(to)} from {persona['email']}: "
+             f"{'SENT' if res.get('success') else res.get('error')} | subject: {subject}")
+
+
 def run_setup():
     log.info("Ensuring HubSpot custom properties exist...")
     created = hs.ensure_properties(HUBSPOT_TOKEN)
@@ -943,7 +958,7 @@ def run_setup():
 def main():
     ap = argparse.ArgumentParser(description="Joffe School-Safety SDR agent")
     ap.add_argument("--mode", required=True,
-                    choices=["setup", "daily", "reply_check", "report"])
+                    choices=["setup", "daily", "reply_check", "report", "test"])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force-weekday", action="store_true")   # accepted for parity; unused
@@ -954,7 +969,9 @@ def main():
     if args.mode in ("daily", "reply_check") and not ANTHROPIC_API_KEY:
         log.error("ANTHROPIC_API_KEY not set."); sys.exit(1)
 
-    if args.mode == "setup":
+    if args.mode == "test":
+        run_test_send()
+    elif args.mode == "setup":
         run_setup()
     elif args.mode == "daily":
         run_daily(dry_run=args.dry_run, limit=args.limit)

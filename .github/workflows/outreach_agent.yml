@@ -14,7 +14,7 @@ on:
         required: true
         default: "daily"
         type: choice
-        options: [setup, daily, reply_check, report]
+        options: [setup, daily, reply_check, report, test]
       dry_run:
         description: "Dry run (no sends)"
         required: false
@@ -28,6 +28,11 @@ on:
         type: string
       bcc:
         description: "BCC address on every send this run (for smoke tests; blank = none)"
+        required: false
+        default: ""
+        type: string
+      test_to:
+        description: "For mode=test: address to send a single replyable test email to"
         required: false
         default: ""
         type: string
@@ -73,6 +78,7 @@ jobs:
           RYAN_APP_PASSWORD:    ${{ secrets.RYAN_APP_PASSWORD }}
           JOFFE_LAUNCH_DATE:  ${{ vars.JOFFE_LAUNCH_DATE }}
           OUTREACH_BCC:       ${{ github.event.inputs.bcc }}
+          TEST_EMAIL_TO:      ${{ github.event.inputs.test_to }}
         run: |
           ARGS="--mode ${{ steps.mode.outputs.mode }}"
           [ "${{ steps.mode.outputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
