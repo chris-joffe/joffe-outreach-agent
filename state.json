@@ -1,9 +1,9 @@
 {
-  "persona_cursor": 8,
+  "persona_cursor": 9,
   "last_daily_run": "2026-08-05",
   "last_report_run": "2026-08-05",
   "daily_sent_count": {
-    "2026-08-05": 8
+    "2026-08-05": 9
   },
   "daily_new_count": {
     "2026-08-05": 8
@@ -15,7 +15,7 @@
   "daily_unsub_count": {},
   "daily_variant_sent": {
     "A": {
-      "2026-08-05": 7
+      "2026-08-05": 8
     },
     "B": {
       "2026-08-05": 1
