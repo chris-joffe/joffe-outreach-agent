@@ -218,12 +218,12 @@ FALLBACK = {
           "Hi {first},\n\nA Joffe membership is really one thing at its core: a number you "
           "can call any hour, where a real emergency specialist picks up. For an active "
           "situation, or just a call you are not sure how to make. The point is simple. You "
-          f"stop being alone with the decision. We do this with {SCHOOLS_SUPPORTED}."),
+          f"stop being alone with the decision. Joffe supports {SCHOOLS_SUPPORTED} across the country."),
     "B": ("The gaps most schools can't see",
           "Hi {first},\n\nMost school incidents aren't one big failure. They're small gaps "
           "quietly lining up, like holes in stacked slices of Swiss cheese. We built a free "
-          "5-minute assessment that walks through the 15 layers schools most often miss. We "
-          f"run it with {SCHOOLS_SUPPORTED}."),
+          "5-minute assessment that walks through the 15 layers schools most often miss. "
+          f"Joffe supports {SCHOOLS_SUPPORTED} across the country."),
 }
 
 
@@ -262,7 +262,13 @@ def generate_batch(contacts):
         "it's too late'. The reader should feel steadier after reading, never more anxious.\n"
         "PERSONALIZE + VARY: weave the specific school's name into each email naturally, and "
         "make EVERY email in the batch distinct, each with its own subject line and its own "
-        "opening sentence. Never send two schools the same template or the same subject.\n\n"
+        "opening sentence. Never send two schools the same template or the same subject.\n"
+        "ACCURACY: the '2,000 K-12 schools' figure means schools Joffe SUPPORTS across its "
+        "services, NOT members and NOT people who took the assessment (membership is far "
+        "smaller). NEVER imply 2,000 members. Never write 'membership with 2,000 schools', "
+        "'join 2,000 schools', or 'we do this with 2,000 schools'. Use the number only as a "
+        "standalone credibility line such as 'Joffe supports 2,000 K-12 schools across the "
+        "country', kept separate from the specific offer.\n\n"
         "Each contact has a VARIANT (A or B) — use its framing:\n"
         f"  {VARIANT_HOOKS['A']}\n"
         f"  {VARIANT_HOOKS['B']}\n\n"
