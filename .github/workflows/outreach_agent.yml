@@ -2,10 +2,10 @@ name: Joffe SDR Outreach Agent
 
 on:
   schedule:
-    # UTC. 9:00 AM PDT = 16:00 UTC (Mar–Nov); becomes 8:00 AM PST after Nov DST
-    # (bump to 17:00 UTC then). Report is triggered by the daily run itself (no
-    # separate report cron — avoids the double-send Vida hit).
-    - cron: "0 16 * * 1-5"                 # daily send      — M–F 9:00 AM PDT
+    # UTC. Daily send 7:00 AM PDT = 14:00 UTC (Mar–Nov); after Nov DST 14:00 UTC
+    # becomes 6:00 AM PST, so bump to 15:00 UTC to keep 7:00 AM local. Report is
+    # triggered by the daily run itself (no separate report cron).
+    - cron: "0 14 * * 1-5"                 # daily send (+ follow-ups) — M–F 7:00 AM PDT
     - cron: "0 16,18,20,22 * * 1-5"        # reply_check     — every 2h 9AM–3PM PDT
   workflow_dispatch:
     inputs:
@@ -63,7 +63,7 @@ jobs:
             echo "limit=${{ github.event.inputs.limit }}"   >> $GITHUB_OUTPUT
           else
             case "${{ github.event.schedule }}" in
-              "0 16 * * 1-5") echo "mode=daily"       >> $GITHUB_OUTPUT ;;
+              "0 14 * * 1-5") echo "mode=daily"       >> $GITHUB_OUTPUT ;;
               *)              echo "mode=reply_check" >> $GITHUB_OUTPUT ;;
             esac
             echo "dry_run=false" >> $GITHUB_OUTPUT
