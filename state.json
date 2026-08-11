@@ -15,11 +15,13 @@
     "2026-08-07": 50
   },
   "daily_reply_count": {
-    "2026-08-10": 1
+    "2026-08-10": 1,
+    "2026-08-11": 1
   },
   "daily_sql_count": {},
   "daily_mql_count": {
-    "2026-08-10": 1
+    "2026-08-10": 1,
+    "2026-08-11": 1
   },
   "daily_bounce_count": {},
   "daily_unsub_count": {
