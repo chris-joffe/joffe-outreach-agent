@@ -817,14 +817,20 @@ def _archive(mail, mid):
 
 def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
     name = (first + " " + last).strip() or email
+    # Export data sometimes duplicates the name across both columns ("Melody Melody").
+    if first and last and first.lower() == last.lower():
+        name = first
     tag = "interested — SQL" if is_sql else "replied — worth a look"
     subject = f"{name} — {tag}"
+    # Colleen replies straight out of this handoff — give her the prospect's own
+    # address, not just the HubSpot link (same ask Manae made on the GCD side, 8/11/26).
+    contact_line = f"Email: {email}\n\n" if email else ""
     hs_line = f"HubSpot: {link}\n\n" if link else ""
     intro = (f"{name} replied to our school-safety outreach and looks like a real lead"
              if is_sql else f"{name} just replied to our outreach — flagging for you")
     _msg = (body or "").strip()
     _msg = _msg[:4000] + ("\n…(truncated)" if len(_msg) > 4000 else "")
-    body_out = (f"Hi Colleen,\n\n{intro} ({reason}).\n\n{hs_line}"
+    body_out = (f"Hi Colleen,\n\n{intro} ({reason}).\n\n{contact_line}{hs_line}"
                 f"Here's the full exchange:\n\n---\n{_msg}\n---\n\n"
                 f"{'Assigned to you in HubSpot. ' if is_sql else ''}Thanks!\n{persona['name']}")
     send_email(persona, COLLEEN_EMAIL, subject, body_out, cc=CHRIS_EMAIL)
