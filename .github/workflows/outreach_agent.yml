@@ -6,7 +6,11 @@ on:
     # becomes 6:00 AM PST, so bump to 15:00 UTC to keep 7:00 AM local. Report is
     # triggered by the daily run itself (no separate report cron).
     - cron: "0 14 * * 1-5"                 # daily send (+ follow-ups) — M–F 7:00 AM PDT
-    - cron: "0 16,18,20,22 * * 1-5"        # reply_check     — every 2h 9AM–3PM PDT
+    # reply_check — every 2h, 9AM–7PM PDT, SEVEN DAYS. Weekday-only checks meant a
+    # Friday-afternoon reply sat until Monday before sales heard about it, and the stall
+    # watch rides this same cadence (Chris, 2026-08-13). Sending stays M–F via its own cron.
+    - cron: "0 16,18,20,22 * * *"          # 9AM, 11AM, 1PM, 3PM PDT — every day
+    - cron: "0 0,2 * * *"                  # 5PM, 7PM PDT (prev. Pacific day) — every day
     - cron: "52 23 * * 1-5"                # report — 4:50 PM PDT: refresh command-center slice
                                            #   for the briefing + combined EOD email (fires even when paused)
   workflow_dispatch:

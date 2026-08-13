@@ -47,7 +47,10 @@ import hubspot_db as hs
 COMPANY_NAME  = "Joffe Emergency Services"
 CHRIS_EMAIL   = "chris@joffeemergencyservices.com"
 COLLEEN_EMAIL = "colleens@joffeemergencyservices.com"
-COLLEEN_OWNER_ID = "199562610"          # HubSpot owner id for SQL assignment
+COLLEEN_OWNER_ID = "199562610"          # HubSpot owner id — owns every lead this agent creates
+# Hours after handoff that the owner's task comes due, and the point at which a lead with
+# no logged follow-up escalates to Chris (Chris, 2026-08-13).
+STALL_HOURS = int(os.environ.get("STALL_HOURS", "12") or 12)
 REPORT_TO     = [CHRIS_EMAIL, COLLEEN_EMAIL]
 
 # The two sending identities. Addresses are public; only the app passwords are secret.
@@ -660,31 +663,47 @@ def _reply_body(msg):
     return ""
 
 def classify_interest(subject, body):
-    """LLM triage of a genuine reply → (auto, opt_out, interested, reason).
-    interested = any real curiosity / willingness to talk or learn more (broad, per Chris)."""
+    """LLM triage of a genuine reply → (auto, opt_out, interested, tier, reason).
+
+    interested = any real curiosity / willingness to talk or learn more (broad, per Chris).
+    tier = "sql" only when the reply carries a buying signal a rep can act on today;
+    "potential" for warm-but-no-ask. Everything interested used to be written as an SQL,
+    which inflated the pipeline and taught sales to distrust the label (Chris, 2026-08-13)."""
     # Never guess "interested" from an empty/blank body — that would manufacture a bogus lead.
     if not (body or "").strip():
-        return False, False, False, "no readable message body — needs human review"
+        return False, False, False, "", "no readable message body — needs human review"
     try:
         text = _anthropic({
             "model": GEN_MODEL, "max_tokens": 300,
             "system": ("Classify a reply to a cold school-safety outreach email. Return ONLY "
-                       "JSON: {\"auto\":bool,\"opt_out\":bool,\"interested\":bool,\"reason\":\"...\"}. "
+                       "JSON: {\"auto\":bool,\"opt_out\":bool,\"interested\":bool,"
+                       "\"buying_signal\":bool,\"reason\":\"...\"}. "
                        "auto=true if it's an automated/OOO/no-reply bounce-back. opt_out=true if "
                        "they ask to stop/unsubscribe OR clearly decline ('no', 'no thanks', 'not "
                        "interested', 'please stop') — but NOT a soft deferral like 'not right now'. "
                        "interested=true for ANY genuine curiosity, question, or willingness to "
-                       "talk/learn more (be generous), but NEVER when opt_out is true. reason = a "
-                       "short phrase."),
+                       "talk/learn more (be generous), but NEVER when opt_out is true. "
+                       "buying_signal=true ONLY when the reply contains something a rep can act "
+                       "on TODAY: asks what it costs or for a quote, asks about dates, "
+                       "availability or scheduling, states how many people or campuses need "
+                       "covering, or asks to book. Everything else is false — 'send me info', "
+                       "'tell me more', naming who handles this, forwarding us to a colleague, "
+                       "or deferring to a future budget year are interested=true but "
+                       "buying_signal=false. Do NOT lean true: this flag decides whether a human "
+                       "is asked to drop what they are doing. reason = a short phrase."),
             "messages": [{"role": "user", "content": f"Subject: {subject}\n\n{body[:1500]}"}],
         }, timeout=60).strip()
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:-1])
         d = json.loads(text)
-        return bool(d.get("auto")), bool(d.get("opt_out")), bool(d.get("interested")), d.get("reason", "")
+        interested = bool(d.get("interested"))
+        tier = ("sql" if bool(d.get("buying_signal")) else "potential") if interested else ""
+        return (bool(d.get("auto")), bool(d.get("opt_out")), interested, tier,
+                d.get("reason", ""))
     except Exception as e:
-        log.warning(f"  interest classify failed ({e}) — treating as interested")
-        return False, False, True, "classify error (defaulted to interested)"
+        log.warning(f"  interest classify failed ({e}) — treating as a warm reply, not an SQL")
+        # Default to the softer tier: a false SQL costs the queue's credibility.
+        return False, False, True, "potential", "classify error (defaulted to warm reply)"
 
 
 def _clean_name(name):
@@ -752,7 +771,7 @@ def _check_mailbox(persona, state, dry_run):
                     continue
 
                 # genuine reply → interest triage
-                auto, opt_out, interested, reason = classify_interest(subject, body)
+                auto, opt_out, interested, tier, reason = classify_interest(subject, body)
                 if auto:
                     if not dry_run:
                         _archive(mail, mid)
@@ -771,7 +790,8 @@ def _check_mailbox(persona, state, dry_run):
                 phone = _extract_phone(body)
                 _bump(state, "daily_reply_count")
 
-                if interested:
+                is_sql = interested and tier == "sql"
+                if is_sql:
                     log.info(f"  SQL from {redact_email(sender_email)} ({reason}) → HubSpot + Colleen")
                     if not dry_run:
                         new_cid = hs.upsert_lead(HUBSPOT_TOKEN, sender_email,
@@ -780,21 +800,38 @@ def _check_mailbox(persona, state, dry_run):
                                                  owner_id=COLLEEN_OWNER_ID, stamp_source=True)
                         if new_cid:
                             hs.stamp(HUBSPOT_TOKEN, new_cid, status="SQL")
+                            hs.create_followup_task(
+                                HUBSPOT_TOKEN, new_cid, COLLEEN_OWNER_ID,
+                                (first + " " + last).strip() or sender_email, reason,
+                                STALL_HOURS, persona["name"])
+                            _track_open_lead(state, sender_email, new_cid,
+                                             (first + " " + last).strip(), reason, persona["name"])
                         _bump(state, "daily_sql_count")
                         _notify_colleen(persona, sender_email, first, last, body, reason,
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=True)
                         _archive(mail, mid)
-                else:
-                    log.info(f"  genuine reply (not SQL) from {redact_email(sender_email)} → MQL + Colleen")
+                elif interested:
+                    log.info(f"  warm reply (no buying signal) from {redact_email(sender_email)} → MQL + Colleen")
                     if not dry_run:
+                        # Owner set here too, so an MQL has a home rather than sitting
+                        # unassigned until someone notices it (Chris, 2026-08-13).
                         new_cid = hs.upsert_lead(HUBSPOT_TOKEN, sender_email,
                                                  "marketingqualifiedlead", first, last,
-                                                 agent_name=persona["name"])
+                                                 agent_name=persona["name"],
+                                                 owner_id=COLLEEN_OWNER_ID)
                         if new_cid:
-                            hs.stamp(HUBSPOT_TOKEN, new_cid, status="Replied")
+                            hs.stamp(HUBSPOT_TOKEN, new_cid, status="MQL")
                         _bump(state, "daily_mql_count")
                         _notify_colleen(persona, sender_email, first, last, body, reason,
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=False)
+                        _archive(mail, mid)
+                else:
+                    log.info(f"  genuine reply, not interested, from {redact_email(sender_email)} → Colleen")
+                    if not dry_run:
+                        if cid:
+                            hs.stamp(HUBSPOT_TOKEN, cid, status="Replied")
+                        _notify_colleen(persona, sender_email, first, last, body, reason,
+                                        hs.contact_link(HUBSPOT_TOKEN, cid), is_sql=False)
                         _archive(mail, mid)
             except Exception as e:
                 log.warning(f"  error on message: {e}")
@@ -813,6 +850,80 @@ def _is_optout(subject, body):
 def _archive(mail, mid):
     mail.store(mid, "+FLAGS", "\\Seen")
     mail.store(mid, "-X-GM-LABELS", "\\Inbox")
+
+
+def _track_open_lead(state, email, cid, name, why, agent_name):
+    """Remember a handed-over SQL so we can check that somebody actually worked it."""
+    open_leads = state.get("open_leads", [])
+    if any((l.get("email") or "").lower() == (email or "").lower() and not l.get("closed")
+           for l in open_leads):
+        return
+    open_leads.append({"email": email, "cid": cid, "name": name, "why": why,
+                       "agent": agent_name,
+                       "handed_at": datetime.now(PACIFIC).isoformat(timespec="seconds"),
+                       "alerted": False, "closed": False})
+    state["open_leads"] = open_leads
+
+
+def check_stalled_leads(state, dry_run=False):
+    """Escalate any handed-over SQL with no logged follow-up after STALL_HOURS.
+
+    Emails Chris and copies Colleen, once per lead. Without this, a lead marked SQL was
+    never looked at again by anything (Chris, 2026-08-13)."""
+    open_leads = state.get("open_leads", [])
+    if not open_leads:
+        return 0
+    now = datetime.now(PACIFIC)
+    stalled, closed = [], 0
+    for lead in open_leads:
+        if lead.get("closed") or lead.get("alerted"):
+            continue
+        try:
+            handed = datetime.fromisoformat(lead["handed_at"])
+        except Exception:
+            lead["closed"] = True
+            continue
+        hours = (now - handed).total_seconds() / 3600.0
+        if hours < STALL_HOURS:
+            continue
+        touched, lead_status, lifecycle = hs.followup_state(HUBSPOT_TOKEN, lead.get("cid"))
+        if touched is None:
+            continue                       # unreadable — don't guess, try again next run
+        worked = (touched > int(handed.timestamp() * 1000)
+                  or (lead_status or "").upper() not in ("", "NEW")
+                  or (lifecycle or "") in ("opportunity", "customer"))
+        if worked:
+            lead["closed"] = True
+            closed += 1
+            log.info(f"  stall check: {redact_email(lead['email'])} was worked — clearing")
+        else:
+            lead["alerted"] = True
+            stalled.append((lead, hours))
+    if (closed or stalled) and not dry_run:
+        save_state(state)
+    if not stalled:
+        return 0
+    lines = []
+    for lead, hours in stalled:
+        lines.append(
+            f"{lead.get('name') or lead.get('email')} — {lead['email']}\n"
+            f"    asked: {lead.get('why') or 'replied to outreach'}\n"
+            f"    handed to Colleen: {lead['handed_at'][:16].replace('T', ' ')} "
+            f"({hours:.0f}h ago) by {lead.get('agent','the SDR')}\n"
+            + (f"    {hs.contact_link(HUBSPOT_TOKEN, lead['cid'])}\n" if lead.get("cid") else ""))
+    subject = (f"[{int(STALL_HOURS)}h no follow-up] {len(stalled)} school-safety lead"
+               f"{'s' if len(stalled) != 1 else ''} waiting")
+    body = (f"These leads asked something concrete and have no logged follow-up in HubSpot "
+            f"{int(STALL_HOURS)} hours after handoff:\n\n" + "\n".join(lines)
+            + f"\nEach has a HubSpot task on Colleen. Nothing has been logged against the "
+            f"contact — a reply sent from outside HubSpot won't show here, so this may be a "
+            f"logging gap rather than a missed lead.\n")
+    if dry_run:
+        log.info(f"[DRY RUN] stall alert to {CHRIS_EMAIL} cc {COLLEEN_EMAIL}:\n{subject}\n{body}")
+    else:
+        send_email(PERSONAS[0], CHRIS_EMAIL, subject, body, cc=COLLEEN_EMAIL)
+        log.info(f"  stall check: escalated {len(stalled)} lead(s) to Chris")
+    return len(stalled)
 
 
 def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
@@ -881,7 +992,7 @@ def _sql_emails(limit=50):
     return [r.get("properties", {}).get("email", "") for r in (d.get("results", []) if st == 200 else [])]
 
 
-def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, replies, today, table=None):
+def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, replies, today, table=None, open_leads=None):
     """Write the Joffe SDR's slice into command-center/data/agent-performance.json so it
     shows in the CEO morning briefing + the combined EOD email. One tile for the whole
     pipeline (Jessica + Ryan round-robin one HubSpot pipeline, so leads can't be split per
@@ -919,6 +1030,9 @@ def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, repli
         "note": f"Reply rate {reply_rate} · {reached:,} reached lifetime · Jessica + Ryan (round-robin)",
         # Detailed Today / 7-day / Lifetime table for the combined EOD email.
         "table": table or [],
+        # Handed-over leads with nothing logged against them yet — shown in the morning
+        # briefing and the combined EOD email (Chris, 2026-08-13).
+        "open_leads": open_leads or [],
     }
     # Read-modify-write with retry on 409: the GCD agents (Vida, Elena) write this same file in
     # the same window, so a stale-SHA conflict is expected — re-read and retry.
@@ -1055,10 +1169,23 @@ def run_report(dry_run=False, triggered_by_daily=False):
 
         # Keep the CEO briefing + combined EOD email fed (best-effort; never fatal).
         perf_table = [[l.replace("&rarr;", "→"), a, b, c] for l, a, b, c, _ in rows]
+        # Leads handed to Colleen with nothing logged against them yet, oldest first.
+        def _age_h(l):
+            try:
+                return (datetime.now(PACIFIC)
+                        - datetime.fromisoformat(l["handed_at"])).total_seconds() / 3600.0
+            except Exception:
+                return 0.0
+        open_leads = sorted((l for l in state.get("open_leads", []) if not l.get("closed")),
+                            key=_age_h, reverse=True)
         update_agent_performance(
             sent_today=td("daily_sent_count"), replies_7d=wk("daily_reply_count"),
             sql=c_sql, mql=mql, reached=reached, replies=replies, today=today,
             table=perf_table,
+            open_leads=[{"name": l.get("name") or l["email"], "email": l["email"],
+                         "why": l.get("why", ""), "hours": round(_age_h(l)),
+                         "link": hs.contact_link(HUBSPOT_TOKEN, l.get("cid")) if l.get("cid") else "",
+                         "alerted": bool(l.get("alerted"))} for l in open_leads],
         )
 
         if dry_run:
@@ -1103,7 +1230,7 @@ def run_setup():
 def main():
     ap = argparse.ArgumentParser(description="Joffe School-Safety SDR agent")
     ap.add_argument("--mode", required=True,
-                    choices=["setup", "daily", "reply_check", "report", "test"])
+                    choices=["setup", "daily", "reply_check", "stall_check", "report", "test"])
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--force-weekday", action="store_true")   # accepted for parity; unused
@@ -1122,6 +1249,9 @@ def main():
         run_daily(dry_run=args.dry_run, limit=args.limit)
     elif args.mode == "reply_check":
         run_reply_check(dry_run=args.dry_run)
+        check_stalled_leads(load_state(), dry_run=args.dry_run)
+    elif args.mode == "stall_check":
+        check_stalled_leads(load_state(), dry_run=args.dry_run)
     elif args.mode == "report":
         run_report(dry_run=args.dry_run)
 

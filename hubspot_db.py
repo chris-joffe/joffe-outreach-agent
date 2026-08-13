@@ -22,11 +22,15 @@ Custom properties this module owns (auto-created by ensure_properties):
   joffe_outreach_agent    string sending SDR display name (Jessica Dean / Ryan Andrews)
 """
 import json
+import logging
 import os
 import ssl
 import time
+from datetime import datetime
 import urllib.request
 import urllib.error
+
+log = logging.getLogger("joffe-sdr")
 
 BASE = "https://api.hubapi.com"
 
@@ -420,6 +424,67 @@ def find_contact(token, email):
     if status == 200 and data.get("results"):
         return str(data["results"][0]["id"])
     return ""
+
+
+def create_followup_task(token, cid, owner_id, name, why, hours, agent_name=""):
+    """Put a handed-over SQL in the owner's HubSpot task queue, due in `hours`.
+
+    Before this, a handoff existed only as an email in one inbox: nothing appeared in a
+    queue and nothing measured whether it was worked (Chris, 2026-08-13). Best-effort —
+    a failure here never blocks the lead write or the notification.
+    """
+    if not (cid and owner_id):
+        return ""
+    due_ms = int((time.time() + hours * 3600) * 1000)
+    body = {"properties": {
+        "hs_task_subject": f"Follow up: {name or 'new lead'} (school-safety enquiry)",
+        "hs_task_body": (why or "Replied to outreach.") + (f" — handed over by {agent_name}"
+                                                           if agent_name else ""),
+        "hs_task_status": "NOT_STARTED",
+        "hs_task_priority": "HIGH",
+        "hs_task_type": "EMAIL",
+        "hs_timestamp": due_ms,
+        "hubspot_owner_id": str(owner_id),
+    }, "associations": [{
+        "to": {"id": cid},
+        "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 204}],
+    }]}
+    try:
+        st, data = _request("POST", f"{BASE}/crm/v3/objects/tasks", token, body)
+        if st in (200, 201):
+            return str(data.get("id", ""))
+        log.warning(f"    task create failed ({st}): {str(data)[:160]}")
+    except Exception as e:
+        log.warning(f"    task create failed: {e}")
+    return ""
+
+
+def followup_state(token, cid):
+    """(last_touch_epoch_ms, lead_status, lifecycle) for a contact, or (None,"","") if the
+    read fails — the caller then leaves the lead alone rather than crying wolf."""
+    if not cid:
+        return None, "", ""
+    props = "notes_last_contacted,hs_last_sales_activity_timestamp,hs_lead_status,lifecyclestage"
+    try:
+        _, d = _request("GET", f"{BASE}/crm/v3/objects/contacts/{cid}?properties={props}", token)
+    except Exception as e:
+        log.warning(f"  stall check: could not read contact {cid}: {e}")
+        return None, "", ""
+    pr = d.get("properties", {}) or {}
+
+    def _ms(v):
+        if not v:
+            return 0
+        try:
+            return int(datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp() * 1000)
+        except Exception:
+            try:
+                return int(v)
+            except Exception:
+                return 0
+    return (max(_ms(pr.get("notes_last_contacted")),
+                _ms(pr.get("hs_last_sales_activity_timestamp"))),
+            (pr.get("hs_lead_status") or ""), (pr.get("lifecyclestage") or ""))
 
 
 def upsert_lead(token, email, stage, first="", last="", company="", phone="",
