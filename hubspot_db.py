@@ -426,8 +426,8 @@ def find_contact(token, email):
     return ""
 
 
-def create_followup_task(token, cid, owner_id, name, why, hours, agent_name=""):
-    """Put a handed-over SQL in the owner's HubSpot task queue, due in `hours`.
+def create_followup_task(token, cid, owner_id, name, why, due_minutes, agent_name=""):
+    """Put a handed-over SQL in the owner's HubSpot task queue, due in `due_minutes`.
 
     Before this, a handoff existed only as an email in one inbox: nothing appeared in a
     queue and nothing measured whether it was worked (Chris, 2026-08-13). Best-effort —
@@ -435,7 +435,7 @@ def create_followup_task(token, cid, owner_id, name, why, hours, agent_name=""):
     """
     if not (cid and owner_id):
         return ""
-    due_ms = int((time.time() + hours * 3600) * 1000)
+    due_ms = int((time.time() + due_minutes * 60) * 1000)
     body = {"properties": {
         "hs_task_subject": f"Follow up: {name or 'new lead'} (school-safety enquiry)",
         "hs_task_body": (why or "Replied to outreach.") + (f" — handed over by {agent_name}"

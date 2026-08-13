@@ -48,8 +48,11 @@ COMPANY_NAME  = "Joffe Emergency Services"
 CHRIS_EMAIL   = "chris@joffeemergencyservices.com"
 COLLEEN_EMAIL = "colleens@joffeemergencyservices.com"
 COLLEEN_OWNER_ID = "199562610"          # HubSpot owner id — owns every lead this agent creates
-# Hours after handoff that the owner's task comes due, and the point at which a lead with
-# no logged follow-up escalates to Chris (Chris, 2026-08-13).
+# When Colleen's task comes due, and — separately — when a lead with no logged follow-up
+# escalates to Chris. The task is deliberately short-fused so it sits at the top of her
+# queue within the half hour; the 12h escalation is a backstop, not the target
+# (Chris, 2026-08-13).
+TASK_DUE_MINUTES = int(os.environ.get("TASK_DUE_MINUTES", "30") or 30)
 STALL_HOURS = int(os.environ.get("STALL_HOURS", "12") or 12)
 REPORT_TO     = [CHRIS_EMAIL, COLLEEN_EMAIL]
 
@@ -803,7 +806,7 @@ def _check_mailbox(persona, state, dry_run):
                             hs.create_followup_task(
                                 HUBSPOT_TOKEN, new_cid, COLLEEN_OWNER_ID,
                                 (first + " " + last).strip() or sender_email, reason,
-                                STALL_HOURS, persona["name"])
+                                TASK_DUE_MINUTES, persona["name"])
                             _track_open_lead(state, sender_email, new_cid,
                                              (first + " " + last).strip(), reason, persona["name"])
                         _bump(state, "daily_sql_count")
