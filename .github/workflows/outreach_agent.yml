@@ -85,6 +85,9 @@ jobs:
           RYAN_APP_PASSWORD:    ${{ secrets.RYAN_APP_PASSWORD }}
           JOFFE_LAUNCH_DATE:  ${{ vars.JOFFE_LAUNCH_DATE }}
           COMMAND_CENTER_TOKEN: ${{ secrets.COMMAND_CENTER_TOKEN }}
+          # Lead announcements in Slack (#GrowthTeam). Unset = feature silently off.
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_LEADS_CHANNEL: ${{ vars.SLACK_LEADS_CHANNEL }}
           OUTREACH_BCC:       ${{ github.event.inputs.bcc }}
           TEST_EMAIL_TO:      ${{ github.event.inputs.test_to }}
         run: |

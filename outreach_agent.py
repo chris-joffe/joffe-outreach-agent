@@ -53,6 +53,11 @@ COLLEEN_OWNER_ID = "199562610"          # HubSpot owner id — owns every lead t
 # queue within the half hour; the 12h escalation is a backstop, not the target
 # (Chris, 2026-08-13).
 TASK_DUE_MINUTES = int(os.environ.get("TASK_DUE_MINUTES", "30") or 30)
+# Leads are announced in Slack so the growth team sees the queue without waiting for an
+# email digest: Joffe leads to #GrowthTeam, GCD leads to #GCD (Chris, 2026-08-13). Unset
+# token = silently skipped, so a missing secret never costs us a run.
+SLACK_BOT_TOKEN     = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_LEADS_CHANNEL = os.environ.get("SLACK_LEADS_CHANNEL") or "#GrowthTeam"
 STALL_HOURS = int(os.environ.get("STALL_HOURS", "12") or 12)
 REPORT_TO     = [CHRIS_EMAIL, COLLEEN_EMAIL]
 
@@ -809,6 +814,14 @@ def _check_mailbox(persona, state, dry_run):
                                 TASK_DUE_MINUTES, persona["name"])
                             _track_open_lead(state, sender_email, new_cid,
                                              (first + " " + last).strip(), reason, persona["name"])
+                            who_s = (first + " " + last).strip() or sender_email
+                            slack_post(
+                                f":inbox_tray: *New SQL — {who_s}*\n_{reason}_\n"
+                                f"{sender_email}"
+                                + (f" · <{hs.contact_link(HUBSPOT_TOKEN, new_cid)}|HubSpot>"
+                                   if new_cid else "")
+                                + f"\nOwner: Colleen · task due in {TASK_DUE_MINUTES} min "
+                                f"· via {persona['name']}")
                         _bump(state, "daily_sql_count")
                         _notify_colleen(persona, sender_email, first, last, body, reason,
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=True)
@@ -853,6 +866,33 @@ def _is_optout(subject, body):
 def _archive(mail, mid):
     mail.store(mid, "+FLAGS", "\\Seen")
     mail.store(mid, "-X-GM-LABELS", "\\Inbox")
+
+
+def slack_post(text, dry_run=False):
+    """Post a line to the leads channel. Best-effort and never fatal — a Slack outage or a
+    missing token must not stop a lead reaching Colleen by email."""
+    if not SLACK_BOT_TOKEN or not SLACK_LEADS_CHANNEL:
+        return False
+    if dry_run:
+        log.info(f"  [DRY RUN] Slack -> {SLACK_LEADS_CHANNEL}: {text[:120]}")
+        return False
+    payload = json.dumps({"channel": SLACK_LEADS_CHANNEL, "text": text,
+                          "unfurl_links": False}).encode()
+    req = urllib.request.Request("https://slack.com/api/chat.postMessage", data=payload,
+                                 method="POST")
+    req.add_header("Authorization", f"Bearer {SLACK_BOT_TOKEN}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=20,
+                                    context=ssl.create_default_context()) as r:
+            data = json.loads(r.read().decode())
+        if data.get("ok"):
+            return True
+        # Slack answers 200 with ok:false and a reason (not_in_channel, channel_not_found…)
+        log.warning(f"  Slack post failed: {data.get('error')}")
+    except Exception as e:
+        log.warning(f"  Slack post failed: {e}")
+    return False
 
 
 def _track_open_lead(state, email, cid, name, why, agent_name):
@@ -925,6 +965,14 @@ def check_stalled_leads(state, dry_run=False):
         log.info(f"[DRY RUN] stall alert to {CHRIS_EMAIL} cc {COLLEEN_EMAIL}:\n{subject}\n{body}")
     else:
         send_email(PERSONAS[0], CHRIS_EMAIL, subject, body, cc=COLLEEN_EMAIL)
+        for lead, hours in stalled:
+            slack_post(
+                f":rotating_light: *No follow-up in {hours:.0f}h* — "
+                f"{lead.get('name') or lead['email']}\n_{lead.get('why','')}_\n"
+                f"{lead['email']}"
+                + (f" · <{hs.contact_link(HUBSPOT_TOKEN, lead['cid'])}|HubSpot>"
+                   if lead.get("cid") else "")
+                + "\nNothing logged against the contact since handoff — may be a logging gap.")
         log.info(f"  stall check: escalated {len(stalled)} lead(s) to Chris")
     return len(stalled)
 
