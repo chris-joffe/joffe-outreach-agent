@@ -57,7 +57,7 @@ TASK_DUE_MINUTES = int(os.environ.get("TASK_DUE_MINUTES", "30") or 30)
 # email digest: Joffe leads to #GrowthTeam, GCD leads to #GCD (Chris, 2026-08-13). Unset
 # token = silently skipped, so a missing secret never costs us a run.
 SLACK_BOT_TOKEN     = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_LEADS_CHANNEL = os.environ.get("SLACK_LEADS_CHANNEL") or "#GrowthTeam"
+SLACK_LEADS_CHANNEL = os.environ.get("SLACK_LEADS_CHANNEL") or "C03NUB0EK4J"   # #growth-team (private)
 STALL_HOURS = int(os.environ.get("STALL_HOURS", "12") or 12)
 REPORT_TO     = [CHRIS_EMAIL, COLLEEN_EMAIL]
 
