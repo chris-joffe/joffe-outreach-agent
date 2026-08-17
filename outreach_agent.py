@@ -42,6 +42,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import hubspot_db as hs
+from email_format import clean_quote, link_html, paras_html, quote_block_html, wrapper_html
 
 # ─── Identity & contacts ──────────────────────────────────────────────────────
 COMPANY_NAME  = "Joffe Emergency Services"
@@ -406,7 +407,13 @@ def assemble(ed, contact, sender_name):
     sig_p = f"\n\n{sender_name}\n{COMPANY_NAME}"
     sig_h = f"<br><br>{html_escape(sender_name)}<br>{COMPANY_NAME}"
     plain = body + cta_p + sig_p
-    html = html_escape(body).replace("\n", "<br>\n") + cta_h + sig_h
+    # Real <p> paragraphs, not a chain of <br>: the recipient's client then wraps the text
+    # itself instead of inheriting our line breaks, which is what made these read as machine
+    # output (Chris, 2026-08-17). The CTA/signature fragments are already HTML.
+    html = wrapper_html(
+        paras_html(body)
+        + f'<p style="margin:0 0 12px">{cta_h.replace("<br><br>", "")}</p>',
+        signature=f"{sender_name}\n{COMPANY_NAME}")
     return subject, plain, html
 
 
@@ -992,10 +999,24 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
              if is_sql else f"{name} just replied to our outreach — flagging for you")
     _msg = (body or "").strip()
     _msg = _msg[:4000] + ("\n…(truncated)" if len(_msg) > 4000 else "")
+    cleaned = clean_quote(_msg)
     body_out = (f"Hi Colleen,\n\n{intro} ({reason}).\n\n{contact_line}{hs_line}"
-                f"Here's the full exchange:\n\n---\n{_msg}\n---\n\n"
+                f"Here's the full exchange:\n\n{cleaned}\n\n"
                 f"{'Assigned to you in HubSpot. ' if is_sql else ''}Thanks!\n{persona['name']}")
-    send_email(persona, COLLEEN_EMAIL, subject, body_out, cc=CHRIS_EMAIL)
+    # HTML version: the prospect's words in an indented block with the '>' plumbing stripped,
+    # and the record as a link on words rather than a pasted URL.
+    lead_line = f"{intro} ({reason})."
+    detail = f"Email: {link_html('mailto:' + email, email)}" if email else ""
+    if link:
+        detail += (" &nbsp;·&nbsp; " if detail else "") + link_html(link, "Open the HubSpot record")
+    html_out = wrapper_html(
+        paras_html(f"Hi Colleen,\n\n{lead_line}")
+        + (f'<p style="margin:0 0 12px">{detail}</p>' if detail else "")
+        + '<p style="margin:0 0 6px;color:#666;font-size:13px">The exchange:</p>'
+        + quote_block_html(_msg)
+        + paras_html(("Assigned to you in HubSpot. " if is_sql else "") + "Thanks!"),
+        signature=persona["name"])
+    send_email(persona, COLLEEN_EMAIL, subject, body_out, html=html_out, cc=CHRIS_EMAIL)
 
 
 def run_reply_check(dry_run=False):
