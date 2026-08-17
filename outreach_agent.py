@@ -86,8 +86,11 @@ GENERATION_BATCH_SIZE = 20
 # Combined daily cap ramps by whole weeks since launch. Set JOFFE_LAUNCH_DATE
 # (YYYY-MM-DD) as a repo variable/secret on go-live; until then we stay at the
 # conservative warm-up floor.
-RAMP_SCHEDULE = {0: 50, 1: 250, 2: 500, 3: 900}   # week → cap; week ≥ 4 → 1000
-RAMP_MAX = 1000
+# week → cap; week ≥ 5 → RAMP_MAX. Raised 2026-08-17: this agent round-robins two
+# mailboxes (Jessica + Ryan), so 1,250/day is ~625 each — gentler per mailbox than Vida's
+# 1,250 from one address.
+RAMP_SCHEDULE = {0: 50, 1: 250, 2: 500, 3: 900, 4: 1100}
+RAMP_MAX = 1250
 
 # ─── Models & secrets ─────────────────────────────────────────────────────────
 GEN_MODEL          = "claude-haiku-4-5"
@@ -153,7 +156,7 @@ def daily_cap():
     w = weeks_since_launch()
     if w is None:
         return 0                         # no launch date set → PAUSED (explicit go-live switch)
-    return RAMP_SCHEDULE.get(w, RAMP_MAX) if w < 4 else RAMP_MAX
+    return RAMP_SCHEDULE.get(w, RAMP_MAX) if w < 5 else RAMP_MAX
 
 
 def load_state():
