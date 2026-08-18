@@ -818,6 +818,7 @@ def _check_mailbox(persona, state, dry_run):
                                                  owner_id=COLLEEN_OWNER_ID, stamp_source=True)
                         if new_cid:
                             hs.stamp(HUBSPOT_TOKEN, new_cid, status="SQL")
+                            hs.log_reply_note(HUBSPOT_TOKEN, new_cid, body, reason, persona["name"])
                             hs.create_followup_task(
                                 HUBSPOT_TOKEN, new_cid, COLLEEN_OWNER_ID,
                                 (first + " " + last).strip() or sender_email, reason,
@@ -847,6 +848,7 @@ def _check_mailbox(persona, state, dry_run):
                                                  owner_id=COLLEEN_OWNER_ID)
                         if new_cid:
                             hs.stamp(HUBSPOT_TOKEN, new_cid, status="MQL")
+                            hs.log_reply_note(HUBSPOT_TOKEN, new_cid, body, reason, persona["name"])
                         _bump(state, "daily_mql_count")
                         _notify_colleen(persona, sender_email, first, last, body, reason,
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=False)

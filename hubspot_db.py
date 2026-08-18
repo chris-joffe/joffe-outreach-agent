@@ -26,9 +26,11 @@ import logging
 import os
 import ssl
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 import urllib.request
 import urllib.error
+
+from email_format import clean_quote, paras_html
 
 log = logging.getLogger("joffe-sdr")
 
@@ -423,6 +425,36 @@ def find_contact(token, email):
     })
     if status == 200 and data.get("results"):
         return str(data["results"][0]["id"])
+    return ""
+
+
+def log_reply_note(token, cid, reply_text, why="", agent_name=""):
+    """Put the prospect's actual reply on the record as a note.
+
+    Without it the contact carries a task saying "follow up" and nothing else — the reply
+    lives only in the SDR mailbox, which sales can't see (Manae hit exactly this on
+    2026-08-17). Notes are used rather than logged emails on purpose: a note does not move
+    notes_last_contacted or hs_last_sales_activity_timestamp, so it can't make an untouched
+    lead look answered in the speed-to-lead timer.
+    """
+    if not cid:
+        return ""
+    body = clean_quote(reply_text or "")
+    html = (f"<b>Reply received by {agent_name or 'the SDR'}</b> (logged automatically)"
+            + (f"<br><br><i>{why}</i>" if why else "")
+            + "<br><br>" + (paras_html(body) if body else "<i>(no readable message body)</i>"))
+    payload = {"properties": {
+        "hs_note_body": html[:65000],
+        "hs_timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+        "associations": [{"to": {"id": cid}, "types": [
+            {"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 202}]}]}
+    try:
+        st, data = _request("POST", f"{BASE}/crm/v3/objects/notes", token, payload)
+        if st in (200, 201):
+            return str(data.get("id", ""))
+        log.warning(f"    note create failed ({st}): {str(data)[:140]}")
+    except Exception as e:
+        log.warning(f"    note create failed: {e}")
     return ""
 
 
