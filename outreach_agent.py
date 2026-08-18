@@ -164,6 +164,25 @@ def daily_cap():
     return RAMP_SCHEDULE.get(w, RAMP_MAX) if w < 5 else RAMP_MAX
 
 
+# ─── Never treat our own people as prospects ─────────────────────────────────
+# Manae replied to the agent's mailbox and the agent booked HER as a sales-qualified lead:
+# contact created, task assigned, note logged, Slack posted — repeatedly, because she kept
+# replying (Chris, 2026-08-17). Anyone at one of our own domains is internal: their mail is
+# read and archived, but it never becomes a lead, a task, a note, or a Slack post.
+INTERNAL_DOMAINS = {
+    "getcprdone.com", "getcprdone.net", "getcbr.net",
+    "joffeemergencyservices.com", "joffeschoolsafety.com",
+}
+
+
+def is_internal_address(addr):
+    """True for anyone on our own domains — teammates, aliases, the agents themselves."""
+    addr = (addr or "").strip().lower()
+    if "@" not in addr:
+        return False
+    return addr.rsplit("@", 1)[-1] in INTERNAL_DOMAINS
+
+
 def load_state():
     if STATE_FILE.exists():
         try:
@@ -769,6 +788,14 @@ def _check_mailbox(persona, state, dry_run):
                 auto_hdr = (msg.get("Auto-Submitted", "") or "").lower()
                 is_auto = ("auto-replied" in auto_hdr or "auto-generated" in auto_hdr
                            or bool(msg.get("X-Autoreply")) or bool(msg.get("X-Autorespond")))
+                # Our own people are not leads (see INTERNAL_DOMAINS).
+                if is_internal_address(sender_email):
+                    log.info(f"  Internal sender {redact_email(sender_email)} — archiving, "
+                             f"never a lead")
+                    if not dry_run:
+                        _archive(mail, mid)
+                    continue
+
                 kind = classify_reply(sender, subject, body)
                 cid = hs.find_contact(HUBSPOT_TOKEN, sender_email) if sender_email else ""
 
