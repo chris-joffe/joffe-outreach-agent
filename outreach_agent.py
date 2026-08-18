@@ -57,6 +57,11 @@ TASK_DUE_MINUTES = int(os.environ.get("TASK_DUE_MINUTES", "30") or 30)
 # Leads are announced in Slack so the growth team sees the queue without waiting for an
 # email digest: Joffe leads to #GrowthTeam, GCD leads to #GCD (Chris, 2026-08-13). Unset
 # token = silently skipped, so a missing secret never costs us a run.
+# Per-lead handoff email to Colleen. OFF by default as of 2026-08-17 — the HubSpot task is
+# the notification (the reply is logged as a note on the record), Slack carries the feed,
+# and the 12-hour escalation is the backstop. HANDOFF_EMAIL=1 restores it.
+HANDOFF_EMAIL = (os.environ.get("HANDOFF_EMAIL", "0") or "0").strip() not in ("0", "false", "no")
+
 SLACK_BOT_TOKEN     = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_LEADS_CHANNEL = os.environ.get("SLACK_LEADS_CHANNEL") or "C03NUB0EK4J"   # #growth-team (private)
 STALL_HOURS = int(os.environ.get("STALL_HOURS", "12") or 12)
@@ -1021,6 +1026,9 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
         + quote_block_html(_msg)
         + paras_html(("Assigned to you in HubSpot. " if is_sql else "") + "Thanks!"),
         signature=persona["name"])
+    if not HANDOFF_EMAIL:
+        log.info(f"    handoff email suppressed (HANDOFF_EMAIL=0) — task + note carry it")
+        return
     send_email(persona, COLLEEN_EMAIL, subject, body_out, html=html_out, cc=CHRIS_EMAIL)
 
 
