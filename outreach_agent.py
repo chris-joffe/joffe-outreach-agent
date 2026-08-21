@@ -563,6 +563,12 @@ def run_daily(dry_run=False, limit=None):
             log.info("Paused — set JOFFE_LAUNCH_DATE (repo variable) to go live. No sends this run.")
             return
     already = state.get("daily_sent_count", {}).get(today, 0)
+    if limit is None:
+        # Whichever ledger is higher wins — a stale checkout must never buy extra sends.
+        live = _touched_today()
+        if live is not None and live > already:
+            log.info(f"HubSpot shows {live} touched today vs {already} in state — using HubSpot.")
+            already = live
     if already >= cap:
         log.info(f"Daily cap reached ({already}/{cap}). Exiting.")
         return
@@ -1143,11 +1149,19 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
 
 def run_reply_check(dry_run=False):
     state = load_state()
-    # self-heal: if today's daily send never ran (dropped cron), run it first
+    # self-heal: if today's daily send never ran (dropped cron), run it first. state.json
+    # is not trustworthy here — see _touched_today() — so HubSpot gets the deciding vote,
+    # and an unanswerable query means we do nothing rather than risk a duplicate batch.
     if not dry_run and state.get("last_daily_run") != today_str():
-        log.info("Daily send hasn't run today — self-healing before reply check.")
-        run_daily(dry_run=False)
-        state = load_state()
+        live = _touched_today()
+        if live is None:
+            log.warning("Can't confirm today's send from HubSpot — skipping self-heal.")
+        elif live:
+            log.info(f"Daily send already went out today ({live} touched) — no self-heal.")
+        else:
+            log.info("Daily send hasn't run today — self-healing before reply check.")
+            run_daily(dry_run=False)
+            state = load_state()
     for persona in PERSONAS:
         _check_mailbox(persona, state, dry_run)
     if not dry_run:
@@ -1164,6 +1178,27 @@ def _count(status=None, variant=None):
     st, data = hs._request("POST", f"{hs.BASE}/crm/v3/objects/contacts/search", HUBSPOT_TOKEN,
                            {"filterGroups": [{"filters": filters}], "limit": 1})
     return data.get("total", 0) if st == 200 else 0
+
+
+def _touched_today():
+    """How many schools this agent has actually mailed today, straight from HubSpot.
+    None if the query fails — callers must not read that as zero.
+
+    state.json can't answer this. It only reaches the repo in a commit at the very end of
+    the job, and the 16:00 reply_check checks out main within seconds of the daily run
+    pushing — a race it loses every weekday. It read "daily never ran," self-healed, and
+    sent a second full batch: 999 sends against a 500 cap on 8/19 and 8/20. HubSpot is
+    stamped per send, so it always knows (Chris, 2026-08-21)."""
+    st, data = hs._request("POST", f"{hs.BASE}/crm/v3/objects/contacts/search", HUBSPOT_TOKEN,
+                           {"filterGroups": [{"filters": [
+                               {"propertyName": "organization_type_", "operator": "EQ",
+                                "value": hs.SCHOOL_TYPE},
+                               {"propertyName": "joffe_last_touch_date", "operator": "EQ",
+                                "value": today_str()}]}], "limit": 1})
+    if st != 200:
+        log.warning(f"could not count today's touches in HubSpot (status {st})")
+        return None
+    return data.get("total", 0)
 
 
 def _sum_today(state, key):
