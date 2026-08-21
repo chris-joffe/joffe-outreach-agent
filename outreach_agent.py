@@ -87,6 +87,17 @@ MAX_TOUCHES         = 4
 FOLLOWUP_STALE_DAYS = 30                    # don't resurrect a sequence older than this
 MIN_DELAY_SEC, MAX_DELAY_SEC = 10, 20       # send spacing (fits Actions job limits)
 GENERATION_BATCH_SIZE = 20
+# Gmail answers a small slice of sends with a 4xx "try again later" (throttle / reputation
+# check, not a bad address). Those used to fail the address for the day and page Chris; now
+# we back off and retry the same address, then only speak up if it's a pattern, not a blip
+# (Chris, 2026-08-21).
+SEND_RETRY_BACKOFF = (30, 120, 300)         # waits between attempts → 4 tries per address
+DEFER_ALERT_MIN, DEFER_ALERT_RATE = 10, 0.05
+# A 500-send run already takes ~2.5h of the 6h Actions job limit, so the retries get a
+# hard time budget. If Gmail is throttling us broadly, stop waiting and let the deferred
+# addresses come back in the next run rather than getting the whole job killed mid-send.
+RETRY_TIME_BUDGET_SEC = 20 * 60
+_retry_spent = 0
 
 # Combined daily cap ramps by whole weeks since launch. Set JOFFE_LAUNCH_DATE
 # (YYYY-MM-DD) as a repo variable/secret on go-live; until then we stay at the
@@ -446,6 +457,7 @@ def assemble(ed, contact, sender_name):
 
 # ─── SMTP send (per persona) ──────────────────────────────────────────────────
 def send_email(persona, to, subject, plain, html=None, cc=None, bcc=None):
+    global _retry_spent
     import smtplib
     from email.mime.text import MIMEText
     from email.mime.multipart import MIMEMultipart
@@ -466,26 +478,71 @@ def send_email(persona, to, subject, plain, html=None, cc=None, bcc=None):
         msg.attach(MIMEText(html, "html"))
     # bcc is added to the envelope recipients only — never as a header (that's the point).
     recipients = [to] + ([cc] if cc else []) + ([bcc] if bcc else [])
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=_ssl_ctx()) as s:
-            s.login(user, pw)
-            s.sendmail(user, recipients, msg.as_string())
-        return {"success": True}
-    except smtplib.SMTPRecipientsRefused as e:
-        return {"success": False, "error": str(e), "hard_bounce": True}
-    except Exception as e:
-        err = str(e)
-        hard = "550" in err or "5.7.1" in err or "does not exist" in err
-        return {"success": False, "error": err, "hard_bounce": hard}
+    for attempt in range(len(SEND_RETRY_BACKOFF) + 1):
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, context=_ssl_ctx()) as s:
+                s.login(user, pw)
+                s.sendmail(user, recipients, msg.as_string())
+            return {"success": True, "attempts": attempt + 1}
+        except Exception as e:
+            kind, err = _send_verdict(e)
+            if kind == "auth":
+                return {"success": False, "error": err, "auth_error": True}
+            if kind == "hard":
+                return {"success": False, "error": err, "hard_bounce": True}
+            if attempt == len(SEND_RETRY_BACKOFF):
+                return {"success": False, "error": err, "transient": True,
+                        "attempts": attempt + 1}
+            wait = SEND_RETRY_BACKOFF[attempt]
+            if _retry_spent + wait > RETRY_TIME_BUDGET_SEC:
+                log.warning("  retry budget spent for this run — deferring without retry")
+                return {"success": False, "error": err, "transient": True,
+                        "attempts": attempt + 1}
+            _retry_spent += wait
+            log.warning(f"  {redact_email(to)} deferred by Gmail ({err[:120]}) — "
+                        f"retrying in {wait}s")
+            time.sleep(wait)
+
+
+def _send_verdict(exc):
+    """Sort an SMTP failure into ('auth' | 'hard' | 'transient', text).
+
+    The distinction matters because a hard verdict stamps the contact Bounced — a wrong
+    call there burns a good address forever. Gmail's own codes are the authority: 4xx is
+    'come back later', 5xx is 'never'. A bad app password reads as 535, which is neither
+    the prospect's fault nor worth retrying, so it gets its own verdict and stops the run
+    instead of marking every remaining school as bounced."""
+    import smtplib
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return "auth", str(exc)
+    if isinstance(exc, smtplib.SMTPRecipientsRefused):
+        codes = [c for c, _ in exc.recipients.values()]
+        kind = "transient" if codes and all(400 <= c < 500 for c in codes) else "hard"
+        return kind, str(exc)
+    code = getattr(exc, "smtp_code", None)
+    if isinstance(code, int) and code >= 400:
+        return ("transient" if code < 500 else "hard"), str(exc)
+    # Connection resets, TLS hiccups, DNS blips — nothing to do with the address.
+    if isinstance(exc, (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError, OSError)):
+        return "transient", str(exc)
+    err = str(exc)
+    hard = "550" in err or "5.7.1" in err or "does not exist" in err
+    return ("hard" if hard else "transient"), err
 
 
 def notify_chris(error_msg, context=""):
-    try:
-        send_email(PERSONAS[0], CHRIS_EMAIL, f"[Joffe SDR ERROR] {today_str()}",
-                   f"Hi Chris,\n\nThe Joffe SDR agent hit an error.\n\n"
-                   f"Error: {error_msg}\nContext: {context or 'see log'}\n\n—Joffe SDR (automated)")
-    except Exception as e:
-        log.error(f"could not notify Chris: {e}")
+    # Try every mailbox — the thing we're reporting is sometimes the first one being down.
+    for persona in PERSONAS:
+        try:
+            res = send_email(persona, CHRIS_EMAIL, f"[Joffe SDR ERROR] {today_str()}",
+                             f"Hi Chris,\n\nThe Joffe SDR agent hit an error.\n\n"
+                             f"Error: {error_msg}\nContext: {context or 'see log'}\n\n"
+                             f"—Joffe SDR (automated)")
+            if res.get("success"):
+                return
+        except Exception as e:
+            log.error(f"could not notify Chris via {persona['email']}: {e}")
+    log.error(f"could not notify Chris at all: {error_msg} | {context}")
 
 
 # ─── DAILY SEND ───────────────────────────────────────────────────────────────
@@ -569,6 +626,7 @@ def run_daily(dry_run=False, limit=None):
 
         # 4 — send, round-robin the mailbox, log to HubSpot, stamp the ledger
         sent_today = already
+        deferred = []
         cursor = state.get("persona_cursor", 0)
         for i, (c, ed) in enumerate(zip(queue, generated)):
             persona = PERSONAS[cursor % len(PERSONAS)]
@@ -608,16 +666,40 @@ def run_daily(dry_run=False, limit=None):
                 hs.stamp(HUBSPOT_TOKEN, cid, status="Bounced", touches=touch, last_touch=today,
                          variant=variant, agent=persona["name"])
                 _bump(state, "daily_bounce_count")
+            elif res.get("auth_error"):
+                # Every remaining send would fail the same way, and stamping them Bounced
+                # would be a lie. Stop, and leave the queue intact for the next run.
+                log.error(f"  SMTP auth failed for {persona['email']}: {res.get('error')}")
+                notify_chris(f"SMTP auth failed for {persona['email']} — run stopped",
+                             f"{res.get('error')}\n\nNothing was marked contacted after this "
+                             f"point. Check the {persona['pass_env']} app password.")
+                break
             else:
-                log.error(f"  send failed: {res.get('error')}")
-                notify_chris(f"Send failed to {redact_email(c['email'])}", str(res.get("error")))
+                deferred.append((redact_email(c["email"]), str(res.get("error"))))
+                log.error(f"  deferred after {res.get('attempts')} attempts: {res.get('error')}")
+                _bump(state, "daily_defer_count")
 
             state["persona_cursor"] = cursor
             save_state(state)
             if i < len(queue) - 1:
                 time.sleep(random.randint(MIN_DELAY_SEC, MAX_DELAY_SEC))
 
-        log.info(f"Daily complete. {sent_today - already} sent this run ({sent_today}/{cap} today).")
+        if deferred:
+            log.warning(f"{len(deferred)}/{len(queue)} deferred by Gmail — not marked "
+                        f"contacted, so they come back around in the next run.")
+            # A couple of these a day is just Gmail breathing. Only wake Chris when the
+            # rate says something is actually wrong with a mailbox or our reputation.
+            if len(deferred) >= DEFER_ALERT_MIN and len(deferred) >= DEFER_ALERT_RATE * len(queue):
+                lines = "\n".join(f"  {a} — {e[:160]}" for a, e in deferred[:10])
+                more = f"\n  ...and {len(deferred) - 10} more" if len(deferred) > 10 else ""
+                notify_chris(
+                    f"{len(deferred)} of {len(queue)} sends deferred by Gmail",
+                    f"Each was retried {len(SEND_RETRY_BACKOFF) + 1} times. None were marked "
+                    f"contacted, so they'll be attempted again in the next run — no leads "
+                    f"lost. A rate this high usually means a sending-reputation or "
+                    f"app-password problem worth a look.\n\n{lines}{more}")
+        log.info(f"Daily complete. {sent_today - already} sent this run ({sent_today}/{cap} today), "
+                 f"{len(deferred)} deferred.")
         if not dry_run:
             run_report(dry_run=False, triggered_by_daily=True)
     except Exception as e:
@@ -1209,6 +1291,7 @@ def run_report(dry_run=False, triggered_by_daily=False):
             ("SQLs &rarr; Colleen",       td("daily_sql_count"),   wk("daily_sql_count"),   c_sql, True),
             ("MQLs",                      td("daily_mql_count"),   wk("daily_mql_count"),   mql, False),
             ("Hard bounces",              td("daily_bounce_count"),wk("daily_bounce_count"),c_bounced, False),
+            ("Deferred (auto-retried)",   td("daily_defer_count"), wk("daily_defer_count"), sum(state.get("daily_defer_count", {}).values()), False),
             ("Unsubscribes",              td("daily_unsub_count"), wk("daily_unsub_count"), c_unsub, False),
         ]
         subject = (f"[Joffe SDR] {today} — {td('daily_sql_count')} SQLs today, "
