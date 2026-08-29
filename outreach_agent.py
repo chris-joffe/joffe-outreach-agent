@@ -219,6 +219,22 @@ def _bump_variant(state, variant, day=None):
     d[day] = d.get(day, 0) + 1
 
 
+def _bump_persona(state, persona, metric, n=1, day=None):
+    """Per-mailbox daily counters, so Jessica and Ryan can be judged separately.
+
+    The combined daily_*_count keys stay authoritative for this agent's own reporting; this
+    is a parallel breakdown that the command-center SDR scoreboard reads. Sends round-robin
+    ~50/50 by construction, so the number that actually differs between the two mailboxes is
+    replies / MQLs — which is exactly what this makes visible. Metric names are the ones the
+    mirror looks up: sent | reached | reply | sql | mql | bounce | unsub.
+    """
+    day = day or today_str()
+    d = (state.setdefault("daily_by_persona", {})
+              .setdefault(persona, {})
+              .setdefault(metric, {}))
+    d[day] = d.get(day, 0) + n
+
+
 # ─── HTTP (Anthropic) ─────────────────────────────────────────────────────────
 def _ssl_ctx():
     try:
@@ -665,13 +681,16 @@ def run_daily(dry_run=False, limit=None):
                          last_touch=today, variant=variant, agent=persona["name"], **name_props)
                 if touch == 1:
                     _bump(state, "daily_new_count")
+                    _bump_persona(state, persona["key"], "reached")
                 _bump(state, "daily_sent_count")
+                _bump_persona(state, persona["key"], "sent")
                 _bump_variant(state, variant)
             elif res.get("hard_bounce"):
                 log.warning(f"  hard bounce {redact_email(c['email'])}")
                 hs.stamp(HUBSPOT_TOKEN, cid, status="Bounced", touches=touch, last_touch=today,
                          variant=variant, agent=persona["name"])
                 _bump(state, "daily_bounce_count")
+                _bump_persona(state, persona["key"], "bounce")
             elif res.get("auth_error"):
                 # Every remaining send would fail the same way, and stamping them Bounced
                 # would be a lie. Stop, and leave the queue intact for the next run.
@@ -892,6 +911,7 @@ def _check_mailbox(persona, state, dry_run):
                     if kind == "bounce" and cid and not dry_run:
                         hs.stamp(HUBSPOT_TOKEN, cid, status="Bounced")
                         _bump(state, "daily_bounce_count")
+                        _bump_persona(state, persona["key"], "bounce")
                     if not dry_run:
                         _archive(mail, mid)
                     continue
@@ -900,6 +920,7 @@ def _check_mailbox(persona, state, dry_run):
                     if cid and not dry_run:
                         hs.stamp(HUBSPOT_TOKEN, cid, status="Unsubscribed")
                         _bump(state, "daily_unsub_count")
+                        _bump_persona(state, persona["key"], "unsub")
                     if not dry_run:
                         _archive(mail, mid)
                     continue
@@ -918,6 +939,7 @@ def _check_mailbox(persona, state, dry_run):
                     if cid and not dry_run:
                         hs.stamp(HUBSPOT_TOKEN, cid, status="Unsubscribed")
                         _bump(state, "daily_unsub_count")
+                        _bump_persona(state, persona["key"], "unsub")
                     if not dry_run:
                         _archive(mail, mid)
                     continue
@@ -927,6 +949,7 @@ def _check_mailbox(persona, state, dry_run):
                 last = _clean_name(sname.split()[-1]) if len(sname.split()) > 1 else ""
                 phone = _extract_phone(body)
                 _bump(state, "daily_reply_count")
+                _bump_persona(state, persona["key"], "reply")
 
                 is_sql = interested and tier == "sql"
                 if is_sql:
@@ -954,6 +977,7 @@ def _check_mailbox(persona, state, dry_run):
                                 + f"\nOwner: Colleen · task due in {TASK_DUE_MINUTES} min "
                                 f"· via {persona['name']}")
                         _bump(state, "daily_sql_count")
+                        _bump_persona(state, persona["key"], "sql")
                         _notify_colleen(persona, sender_email, first, last, body, reason,
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=True)
                         _archive(mail, mid)
@@ -970,6 +994,7 @@ def _check_mailbox(persona, state, dry_run):
                             hs.stamp(HUBSPOT_TOKEN, new_cid, status="MQL")
                             hs.log_reply_note(HUBSPOT_TOKEN, new_cid, body, reason, persona["name"])
                         _bump(state, "daily_mql_count")
+                        _bump_persona(state, persona["key"], "mql")
                         _notify_colleen(persona, sender_email, first, last, body, reason,
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=False)
                         _archive(mail, mid)
