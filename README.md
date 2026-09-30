@@ -9,8 +9,8 @@ truth (no Google Sheet).
 | Mode | When | What happens |
 |------|------|--------------|
 | `daily` | M–F 9:00 AM PT | Follow-ups due today, then new eligible School contacts, up to the daily cap. Round-robins the two mailboxes, A/B-assigns each contact, sends, logs the email onto the HubSpot timeline, and stamps the tracking properties. Fires the report at the end. |
-| `reply_check` | M–F every 2h (9–3 PT) | Reads both inboxes. Booking interest → **SQL** (owner = Colleen, notify Colleen + CC Chris). Other genuine reply → **MQL**. Opt-out → **Unsubscribed**. Bounce → **Bounced**. Self-heals the daily send if its cron dropped. |
-| `report` | end of `daily` | Emails Chris + Colleen today's numbers + a lifetime A/B comparison pulled live from HubSpot. |
+| `reply_check` | M–F every 2h (9–3 PT) | Reads both inboxes. Booking interest → **SQL** (owner = the school-book rep, notify them + CC Chris). Other genuine reply → **MQL**. Opt-out → **Unsubscribed**. Bounce → **Bounced**. Self-heals the daily send if its cron dropped. |
+| `report` | end of `daily` | Emails Chris + the school-book rep today's numbers + a lifetime A/B comparison pulled live from HubSpot. |
 | `setup` | once / manual | Creates the custom HubSpot properties and verifies token scope + traffic-source attribution. |
 
 ## Senders (round-robin, one clean domain)
@@ -30,8 +30,8 @@ returns the next uncontacted slice (no cursor to maintain).
 Assigned 50/50 per contact (stable per email); the **mailbox round-robins independently**
 so sender reputation doesn't confound the message test.
 
-- **Variant A — Membership (AAA analogy)** → CTA: book time with Colleen
-- **Variant B — Assessment (Swiss Cheese)** → CTA: free self-serve assessment (Colleen link as P.S.)
+- **Variant A — Membership (AAA analogy)** → CTA: book time with the rep — **currently has NO CTA**, see below
+- **Variant B — Assessment (Swiss Cheese)** → CTA: free self-serve assessment (booking link as P.S., omitted while unset)
 
 4-touch cadence: opener → *All Clear* book offer → value/proof → gracious breakup.
 
@@ -96,3 +96,19 @@ no PII (all contact status lives in HubSpot).
 - **Cross-agent cooldown with Vida (GCD)**: not yet wired — dedupe/cooldown so the same
   person isn't hit by both brands at once is a future integration.
 - **Deliverability**: confirm SPF/DKIM/DMARC on `joffeschoolsafety.com` before ramping.
+
+## Rep handover — read before the next launch
+
+Colleen Scheetz left Joffe on 2026-09-30 and Jacob Swisher took the school book. The agent
+now hands leads to `REP_NAME` / `REP_EMAIL` / `REP_OWNER_ID` at the top of `outreach_agent.py`
+— one place, so the next handover is one edit.
+
+**The booking link is UNSET and that changes the A/B test.** Colleen's personal HubSpot
+meetings link was hard-coded and went out in prospect copy; no verified link for Jacob exists
+yet, so `BOOKING_LINK` reads from `JOFFE_BOOKING_LINK` and is empty. While it is empty:
+
+- **Variant A (Membership/AAA) has no call to action at all** — booking a call *was* its CTA.
+- Variant B still offers the free assessment; only its P.S. is dropped.
+
+So an A/B comparison run in this state is not measuring the two variants as designed. Set
+`JOFFE_BOOKING_LINK` (repo variable) before going live, or rewrite Variant A's CTA.

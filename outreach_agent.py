@@ -13,10 +13,10 @@ Sibling of the Get CPR Done "Vida" agent, tailored for Joffe:
     MQL or above is excluded (never message SQL or higher).
   • A/B test, assigned 50/50 per contact (mailbox round-robins independently so
     sender reputation doesn't confound the test):
-        Variant A — Membership (AAA analogy)   → CTA: book time with Colleen
+        Variant A — Membership (AAA analogy)   → CTA: book time with the school-book rep
         Variant B — Assessment (Swiss Cheese)  → CTA: free self-serve assessment
   • 4-touch cadence: opener → book offer (All Clear) → value/proof → breakup.
-  • Replies triaged: booking interest → SQL (owner = Colleen, notify Colleen + CC
+  • Replies triaged: booking interest → SQL (owner = REP_OWNER_ID, notify that rep + CC
     Chris); other genuine reply → MQL; opt-out → Unsubscribed; bounce → Bounced.
   • Volume ramp (combined across both mailboxes): 50 → 250 → 500 → 900 → 1000.
   • PUBLIC repo → logs redact recipient emails; no PII persisted to state.json.
@@ -47,9 +47,13 @@ from email_format import clean_quote, link_html, paras_html, quote_block_html, w
 # ─── Identity & contacts ──────────────────────────────────────────────────────
 COMPANY_NAME  = "Joffe Emergency Services"
 CHRIS_EMAIL   = "chris@joffeemergencyservices.com"
-COLLEEN_EMAIL = "colleens@joffeemergencyservices.com"
-COLLEEN_OWNER_ID = "199562610"          # HubSpot owner id — owns every lead this agent creates
-# When Colleen's task comes due, and — separately — when a lead with no logged follow-up
+# The human this agent hands leads to. Was Colleen Scheetz until she left Joffe on
+# 2026-09-30; Jacob Swisher took the school book. Named generically now so the next handover
+# is one line, not a rename across the file.
+REP_NAME     = "Jacob"
+REP_EMAIL    = "jacobs@joffeemergencyservices.com"
+REP_OWNER_ID = "99170080"               # HubSpot owner id — owns every lead this agent creates
+# When the rep's task comes due, and — separately — when a lead with no logged follow-up
 # escalates to Chris. The task is deliberately short-fused so it sits at the top of her
 # queue within the half hour; the 12h escalation is a backstop, not the target
 # (Chris, 2026-08-13).
@@ -57,7 +61,7 @@ TASK_DUE_MINUTES = int(os.environ.get("TASK_DUE_MINUTES", "30") or 30)
 # Leads are announced in Slack so the growth team sees the queue without waiting for an
 # email digest: Joffe leads to #GrowthTeam, GCD leads to #GCD (Chris, 2026-08-13). Unset
 # token = silently skipped, so a missing secret never costs us a run.
-# Per-lead handoff email to Colleen. OFF by default as of 2026-08-17 — the HubSpot task is
+# Per-lead handoff email to the rep. OFF by default as of 2026-08-17 — the HubSpot task is
 # the notification (the reply is logged as a note on the record), Slack carries the feed,
 # and the 12-hour escalation is the backstop. HANDOFF_EMAIL=1 restores it.
 HANDOFF_EMAIL = (os.environ.get("HANDOFF_EMAIL", "0") or "0").strip() not in ("0", "false", "no")
@@ -65,7 +69,7 @@ HANDOFF_EMAIL = (os.environ.get("HANDOFF_EMAIL", "0") or "0").strip() not in ("0
 SLACK_BOT_TOKEN     = os.environ.get("SLACK_BOT_TOKEN", "")
 SLACK_LEADS_CHANNEL = os.environ.get("SLACK_LEADS_CHANNEL") or "C03NUB0EK4J"   # #growth-team (private)
 STALL_HOURS = int(os.environ.get("STALL_HOURS", "12") or 12)
-REPORT_TO     = [CHRIS_EMAIL, COLLEEN_EMAIL]
+REPORT_TO     = [CHRIS_EMAIL, REP_EMAIL]
 
 # The two sending identities. Addresses are public; only the app passwords are secret.
 PERSONAS = [
@@ -75,8 +79,12 @@ PERSONAS = [
      "email": "ryana@joffeschoolsafety.com", "pass_env": "RYAN_APP_PASSWORD"},
 ]
 
-COLLEEN_LINK = ("https://www.joffeemergencyservices.com/meetings/colleens/"
-                "emergency-management-update?uuid=8a98d109-4d1f-450b-b052-3789356e123f")
+# Colleen's personal HubSpot meetings link was hard-coded here and went out in prospect copy.
+# She has left, and no verified link for Jacob exists yet, so this is read from the
+# environment and is EMPTY until someone sets it. The CTA below omits the booking sentence
+# entirely when it is unset — mailing a dead scheduling link to a school head would be worse
+# than not offering a call. Set JOFFE_BOOKING_LINK (repo variable) to switch it back on.
+BOOKING_LINK = (os.environ.get("JOFFE_BOOKING_LINK", "") or "").strip()
 ASSESSMENT_LINK = "https://www.joffeemergencyservices.com/school-assessment"
 ALL_CLEAR_URL = "https://www.amazon.com/All-Clear-Lessons-Decade-Managing/dp/1394178077"
 SCHOOLS_SUPPORTED = "2,000 K-12 schools"
@@ -411,16 +419,25 @@ def cta_block(variant, touch):
                 "school leaders find useful to read or listen to.")
         return plain, html
     if variant == "B":
-        plain = (f"\n\nIf you're curious, the free 5-minute assessment is here: {ASSESSMENT_LINK}\n"
-                 f"Or if you'd rather talk it through first, Colleen has a little time here: {COLLEEN_LINK}")
+        plain = f"\n\nIf you're curious, the free 5-minute assessment is here: {ASSESSMENT_LINK}"
         html = (f'<br><br>If you\'re curious, the free 5-minute assessment is '
-                f'<a href="{html_escape(ASSESSMENT_LINK, quote=True)}">here</a>.<br>'
-                f'<span style="color:#666">Or if you\'d rather talk it through first, '
-                f'<a href="{html_escape(COLLEEN_LINK, quote=True)}">Colleen has a little time here</a>.</span>')
+                f'<a href="{html_escape(ASSESSMENT_LINK, quote=True)}">here</a>.')
+        if BOOKING_LINK:
+            plain += (f"\nOr if you'd rather talk it through first, {REP_NAME} has a little "
+                      f"time here: {BOOKING_LINK}")
+            html += (f'<br><span style="color:#666">Or if you\'d rather talk it through first, '
+                     f'<a href="{html_escape(BOOKING_LINK, quote=True)}">{REP_NAME} has a little '
+                     f'time here</a>.</span>')
         return plain, html
-    plain = f"\n\nIf it would ever help to talk something through, Colleen keeps a little time open here: {COLLEEN_LINK}"
+    if not BOOKING_LINK:
+        # No booking link configured: this closer is nothing but the booking offer, so it
+        # becomes no closer at all rather than a broken one.
+        return "", ""
+    plain = (f"\n\nIf it would ever help to talk something through, {REP_NAME} keeps a little "
+             f"time open here: {BOOKING_LINK}")
     html = (f'<br><br>If it would ever help to talk something through, '
-            f'<a href="{html_escape(COLLEEN_LINK, quote=True)}">Colleen keeps a little time open here</a>.')
+            f'<a href="{html_escape(BOOKING_LINK, quote=True)}">{REP_NAME} keeps a little time '
+            f'open here</a>.')
     return plain, html
 
 
@@ -782,7 +799,7 @@ def _html_to_text(html):
 def _reply_body(msg):
     """Extract a reply's readable text. Prefer text/plain, but fall back to a tag-stripped
     text/html part so an HTML-only reply is NEVER seen as empty (which blanks the forward to
-    Colleen AND makes the interest classifier default to 'interested')."""
+    the rep AND makes the interest classifier default to 'interested')."""
     plain, html = "", ""
     if msg.is_multipart():
         for part in msg.walk():
@@ -953,17 +970,17 @@ def _check_mailbox(persona, state, dry_run):
 
                 is_sql = interested and tier == "sql"
                 if is_sql:
-                    log.info(f"  SQL from {redact_email(sender_email)} ({reason}) → HubSpot + Colleen")
+                    log.info(f"  SQL from {redact_email(sender_email)} ({reason}) → HubSpot + {REP_NAME}")
                     if not dry_run:
                         new_cid = hs.upsert_lead(HUBSPOT_TOKEN, sender_email,
                                                  "salesqualifiedlead", first, last, phone=phone,
                                                  agent_name=persona["name"],
-                                                 owner_id=COLLEEN_OWNER_ID, stamp_source=True)
+                                                 owner_id=REP_OWNER_ID, stamp_source=True)
                         if new_cid:
                             hs.stamp(HUBSPOT_TOKEN, new_cid, status="SQL")
                             hs.log_reply_note(HUBSPOT_TOKEN, new_cid, body, reason, persona["name"])
                             hs.create_followup_task(
-                                HUBSPOT_TOKEN, new_cid, COLLEEN_OWNER_ID,
+                                HUBSPOT_TOKEN, new_cid, REP_OWNER_ID,
                                 (first + " " + last).strip() or sender_email, reason,
                                 TASK_DUE_MINUTES, persona["name"])
                             _track_open_lead(state, sender_email, new_cid,
@@ -974,7 +991,7 @@ def _check_mailbox(persona, state, dry_run):
                                 f"{sender_email}"
                                 + (f" · <{hs.contact_link(HUBSPOT_TOKEN, new_cid)}|HubSpot>"
                                    if new_cid else "")
-                                + f"\nOwner: Colleen · task due in {TASK_DUE_MINUTES} min "
+                                + f"\nOwner: {REP_NAME} · task due in {TASK_DUE_MINUTES} min "
                                 f"· via {persona['name']}")
                         _bump(state, "daily_sql_count")
                         _bump_persona(state, persona["key"], "sql")
@@ -982,14 +999,14 @@ def _check_mailbox(persona, state, dry_run):
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=True)
                         _archive(mail, mid)
                 elif interested:
-                    log.info(f"  warm reply (no buying signal) from {redact_email(sender_email)} → MQL + Colleen")
+                    log.info(f"  warm reply (no buying signal) from {redact_email(sender_email)} → MQL + {REP_NAME}")
                     if not dry_run:
                         # Owner set here too, so an MQL has a home rather than sitting
                         # unassigned until someone notices it (Chris, 2026-08-13).
                         new_cid = hs.upsert_lead(HUBSPOT_TOKEN, sender_email,
                                                  "marketingqualifiedlead", first, last,
                                                  agent_name=persona["name"],
-                                                 owner_id=COLLEEN_OWNER_ID)
+                                                 owner_id=REP_OWNER_ID)
                         if new_cid:
                             hs.stamp(HUBSPOT_TOKEN, new_cid, status="MQL")
                             hs.log_reply_note(HUBSPOT_TOKEN, new_cid, body, reason, persona["name"])
@@ -999,7 +1016,7 @@ def _check_mailbox(persona, state, dry_run):
                                         hs.contact_link(HUBSPOT_TOKEN, new_cid), is_sql=False)
                         _archive(mail, mid)
                 else:
-                    log.info(f"  genuine reply, not interested, from {redact_email(sender_email)} → Colleen")
+                    log.info(f"  genuine reply, not interested, from {redact_email(sender_email)} → {REP_NAME}")
                     if not dry_run:
                         if cid:
                             hs.stamp(HUBSPOT_TOKEN, cid, status="Replied")
@@ -1027,7 +1044,7 @@ def _archive(mail, mid):
 
 def slack_post(text, dry_run=False):
     """Post a line to the leads channel. Best-effort and never fatal — a Slack outage or a
-    missing token must not stop a lead reaching Colleen by email."""
+    missing token must not stop a lead reaching the rep by email."""
     if not SLACK_BOT_TOKEN or not SLACK_LEADS_CHANNEL:
         return False
     if dry_run:
@@ -1068,7 +1085,7 @@ def _track_open_lead(state, email, cid, name, why, agent_name):
 def check_stalled_leads(state, dry_run=False):
     """Escalate any handed-over SQL with no logged follow-up after STALL_HOURS.
 
-    Emails Chris and copies Colleen, once per lead. Without this, a lead marked SQL was
+    Emails Chris and copies the rep, once per lead. Without this, a lead marked SQL was
     never looked at again by anything (Chris, 2026-08-13)."""
     open_leads = state.get("open_leads", [])
     if not open_leads:
@@ -1108,20 +1125,20 @@ def check_stalled_leads(state, dry_run=False):
         lines.append(
             f"{lead.get('name') or lead.get('email')} — {lead['email']}\n"
             f"    asked: {lead.get('why') or 'replied to outreach'}\n"
-            f"    handed to Colleen: {lead['handed_at'][:16].replace('T', ' ')} "
+            f"    handed to {REP_NAME}: {lead['handed_at'][:16].replace('T', ' ')} "
             f"({hours:.0f}h ago) by {lead.get('agent','the SDR')}\n"
             + (f"    {hs.contact_link(HUBSPOT_TOKEN, lead['cid'])}\n" if lead.get("cid") else ""))
     subject = (f"[{int(STALL_HOURS)}h no follow-up] {len(stalled)} school-safety lead"
                f"{'s' if len(stalled) != 1 else ''} waiting")
     body = (f"These leads asked something concrete and have no logged follow-up in HubSpot "
             f"{int(STALL_HOURS)} hours after handoff:\n\n" + "\n".join(lines)
-            + f"\nEach has a HubSpot task on Colleen. Nothing has been logged against the "
+            + f"\nEach has a HubSpot task on {REP_NAME}. Nothing has been logged against the "
             f"contact — a reply sent from outside HubSpot won't show here, so this may be a "
             f"logging gap rather than a missed lead.\n")
     if dry_run:
-        log.info(f"[DRY RUN] stall alert to {CHRIS_EMAIL} cc {COLLEEN_EMAIL}:\n{subject}\n{body}")
+        log.info(f"[DRY RUN] stall alert to {CHRIS_EMAIL} cc {REP_EMAIL}:\n{subject}\n{body}")
     else:
-        send_email(PERSONAS[0], CHRIS_EMAIL, subject, body, cc=COLLEEN_EMAIL)
+        send_email(PERSONAS[0], CHRIS_EMAIL, subject, body, cc=REP_EMAIL)
         for lead, hours in stalled:
             slack_post(
                 f":rotating_light: *No follow-up in {hours:.0f}h* — "
@@ -1141,7 +1158,7 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
         name = first
     tag = "interested — SQL" if is_sql else "replied — worth a look"
     subject = f"{name} — {tag}"
-    # Colleen replies straight out of this handoff — give her the prospect's own
+    # The rep replies straight out of this handoff — give them the prospect's own
     # address, not just the HubSpot link (same ask Manae made on the GCD side, 8/11/26).
     contact_line = f"Email: {email}\n\n" if email else ""
     hs_line = f"HubSpot: {link}\n\n" if link else ""
@@ -1150,7 +1167,7 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
     _msg = (body or "").strip()
     _msg = _msg[:4000] + ("\n…(truncated)" if len(_msg) > 4000 else "")
     cleaned = clean_quote(_msg)
-    body_out = (f"Hi Colleen,\n\n{intro} ({reason}).\n\n{contact_line}{hs_line}"
+    body_out = (f"Hi {REP_NAME},\n\n{intro} ({reason}).\n\n{contact_line}{hs_line}"
                 f"Here's the full exchange:\n\n{cleaned}\n\n"
                 f"{'Assigned to you in HubSpot. ' if is_sql else ''}Thanks!\n{persona['name']}")
     # HTML version: the prospect's words in an indented block with the '>' plumbing stripped,
@@ -1160,7 +1177,7 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
     if link:
         detail += (" &nbsp;·&nbsp; " if detail else "") + link_html(link, "Open the HubSpot record")
     html_out = wrapper_html(
-        paras_html(f"Hi Colleen,\n\n{lead_line}")
+        paras_html(f"Hi {REP_NAME},\n\n{lead_line}")
         + (f'<p style="margin:0 0 12px">{detail}</p>' if detail else "")
         + '<p style="margin:0 0 6px;color:#666;font-size:13px">The exchange:</p>'
         + quote_block_html(_msg)
@@ -1169,7 +1186,7 @@ def _notify_colleen(persona, email, first, last, body, reason, link, is_sql):
     if not HANDOFF_EMAIL:
         log.info(f"    handoff email suppressed (HANDOFF_EMAIL=0) — task + note carry it")
         return
-    send_email(persona, COLLEEN_EMAIL, subject, body_out, html=html_out, cc=CHRIS_EMAIL)
+    send_email(persona, REP_EMAIL, subject, body_out, html=html_out, cc=CHRIS_EMAIL)
 
 
 def run_reply_check(dry_run=False):
@@ -1237,7 +1254,7 @@ def _sum_recent(counts_by_date, days):
 
 
 def _sql_emails(limit=50):
-    """Emails of contacts currently at SQL status — the QA list Colleen should have."""
+    """Emails of contacts currently at SQL status — the QA list the rep should have."""
     st, d = hs._request("POST", f"{hs.BASE}/crm/v3/objects/contacts/search", HUBSPOT_TOKEN, {
         "filterGroups": [{"filters": [
             {"propertyName": "organization_type_", "operator": "EQ", "value": hs.SCHOOL_TYPE},
@@ -1274,12 +1291,12 @@ def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, repli
         "status": "paused" if paused else "healthy",
         "last_run": now,
         "headline": (f"Paused — awaiting launch" if paused
-                     else f"{sql} SQLs · {mql} MQLs routed to Colleen"),
+                     else f"{sql} SQLs · {mql} MQLs routed to {REP_NAME}"),
         "kpis": [
             {"label": "Sent today", "value": f"{sent_today:,}"},
             {"label": "Replies 7d", "value": f"{replies_7d:,}"},
             {"label": "SQLs (life)", "value": str(sql), "tone": "good"},
-            {"label": "→ Colleen", "value": str(sql)},
+            {"label": f"→ {REP_NAME}", "value": str(sql)},
         ],
         "note": f"Reply rate {reply_rate} · {reached:,} reached lifetime · Jessica + Ryan (round-robin)",
         # Detailed Today / 7-day / Lifetime table for the combined EOD email.
@@ -1321,7 +1338,7 @@ def update_agent_performance(*, sent_today, replies_7d, sql, mql, reached, repli
 
 
 def run_report(dry_run=False, triggered_by_daily=False):
-    """Email Colleen an HTML dashboard: volume, replies, SQLs, deliverability, and the A/B
+    """Email the rep an HTML dashboard: volume, replies, SQLs, deliverability, and the A/B
     (Membership vs Assessment) comparison. Today + 7-day from state counters, Lifetime live
     from HubSpot. Also writes the command-center slice (Chris's view is the combined EOD email)."""
     state = load_state()
@@ -1348,7 +1365,7 @@ def run_report(dry_run=False, triggered_by_daily=False):
             ("Emails sent (all touches)", td("daily_sent_count"), wk("daily_sent_count"), sent_total, False),
             ("New schools reached",       td("daily_new_count"),   wk("daily_new_count"),   reached, False),
             ("Replies",                   td("daily_reply_count"), wk("daily_reply_count"), replies, False),
-            ("SQLs &rarr; Colleen",       td("daily_sql_count"),   wk("daily_sql_count"),   c_sql, True),
+            (f"SQLs &rarr; {REP_NAME}",   td("daily_sql_count"),   wk("daily_sql_count"),   c_sql, True),
             ("MQLs",                      td("daily_mql_count"),   wk("daily_mql_count"),   mql, False),
             ("Hard bounces",              td("daily_bounce_count"),wk("daily_bounce_count"),c_bounced, False),
             ("Deferred (auto-retried)",   td("daily_defer_count"), wk("daily_defer_count"), sum(state.get("daily_defer_count", {}).values()), False),
@@ -1414,7 +1431,7 @@ def run_report(dry_run=False, triggered_by_daily=False):
             "<th align='right' style='padding:8px 14px'>Engaged</th></tr></thead><tbody>"
             + abrow("A &middot; Membership", ab["A"]) + abrow("B &middot; Assessment", ab["B"])
             + "</tbody></table>"
-            f"<p style='margin:14px 0 4px'><b>Sales-Qualified Leads ({len(sql_list)})</b> (with Colleen):</p>"
+            f"<p style='margin:14px 0 4px'><b>Sales-Qualified Leads ({len(sql_list)})</b> (with {REP_NAME}):</p>"
             + ("<ul style='margin:4px 0 0;padding-left:22px'>" + "".join(f"<li>{e}</li>" for e in sql_list)
                + "</ul>" if sql_list else "<p style='color:#888'>(none yet)</p>")
             + "<p style='color:#999;font-size:12px;max-width:560px'>Today &amp; 7-day build over time; "
@@ -1424,7 +1441,7 @@ def run_report(dry_run=False, triggered_by_daily=False):
 
         # Keep the CEO briefing + combined EOD email fed (best-effort; never fatal).
         perf_table = [[l.replace("&rarr;", "→"), a, b, c] for l, a, b, c, _ in rows]
-        # Leads handed to Colleen with nothing logged against them yet, oldest first.
+        # Leads handed to the rep with nothing logged against them yet, oldest first.
         def _age_h(l):
             try:
                 return (datetime.now(PACIFIC)
@@ -1446,11 +1463,11 @@ def run_report(dry_run=False, triggered_by_daily=False):
         if dry_run:
             log.info("[DRY RUN] dashboard (plain):\n" + body)
             return
-        # Colleen only — Chris's Joffe view is the single combined all-SDR EOD email.
-        res = send_email(PERSONAS[0], COLLEEN_EMAIL, subject, body, html=html)
+        # The school-book rep only — Chris's Joffe view is the combined all-SDR EOD email.
+        res = send_email(PERSONAS[0], REP_EMAIL, subject, body, html=html)
         state["last_report_run"] = today
         save_state(state)
-        log.info("Report sent to Colleen." if res.get("success")
+        log.info(f"Report sent to {REP_NAME}." if res.get("success")
                  else f"Report send failed: {res.get('error')}")
     except Exception as e:
         log.exception(f"report failed: {e}")
