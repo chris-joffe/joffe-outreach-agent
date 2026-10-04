@@ -1,7 +1,7 @@
 {
-  "persona_cursor": 37204,
-  "last_daily_run": "2026-10-02",
-  "last_report_run": "2026-10-02",
+  "persona_cursor": 38454,
+  "last_daily_run": "2026-10-03",
+  "last_report_run": "2026-10-03",
   "daily_sent_count": {
     "2026-08-05": 9,
     "2026-08-06": 50,
@@ -325,6 +325,7 @@
   },
   "daily_defer_count": {
     "2026-09-28": 5,
-    "2026-10-01": 392
+    "2026-10-01": 392,
+    "2026-10-03": 1250
   }
 }
